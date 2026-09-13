@@ -9,6 +9,16 @@ from reprobe.chat_types import ModelConfig
 from reprobe.model import LlamaCppModel, ModelError
 from reprobe.terminal import chat
 
+def _gguf_model_path(value: str) -> Path:
+    path = Path(value).expanduser()
+
+    if not path.exists():
+        raise argparse.ArgumentTypeError(
+            f"model does not exist: {path}"
+        )
+
+    return path
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -16,7 +26,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Chat with local GGUF models. Codebase evaluation is not implemented yet.",
     )
     parser.add_argument("repository", type=Path, help="Repository to evaluate (scaffold)")
-    parser.add_argument("--model", required=True, type=Path, help="Path to a GGUF chat model")
+
+    parser.add_argument(
+        "--model", 
+        required=True, 
+        type=_gguf_model_path, 
+        help="Path to a GGUF chat model"
+    )
+
     parser.add_argument("--n-ctx", type=int, help="Context size (default: 4096)")
     parser.add_argument("--n-gpu-layers", type=int, help="GPU layers; -1 for all (default: 0)")
     parser.add_argument("--max-tokens", type=int, help="Maximum reply tokens (default: 512)")
