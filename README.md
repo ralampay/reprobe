@@ -1,26 +1,12 @@
 # Reprobe
 
-Reprobe will use local GGUF models through `llama-cpp-python` to evaluate
-codebases via harnesses, identify issues and improvement opportunities, and
-produce high-level recommendations.
+Reprobe loads local GGUF chat models through `llama-cpp-python` and provides
+interactive terminal chat. Codebase evaluation, harnesses, and recommendations
+are not implemented yet.
 
-This repository currently contains only the Python project scaffold. It does
-not inspect repositories, load models, execute harnesses, or generate recommendations.
+## Installation
 
-## Run the scaffold
-
-With Python 3.10 or newer, run from this directory:
-
-```bash
-python -m reprobe ./path/to/repo
-python -m reprobe --help
-```
-
-The CLI accepts a repository path and prints a scaffold notice. It does not
-validate or access that path yet. No third-party dependencies are needed for
-this initial CLI.
-
-## Development installation
+Use Python 3.10 or newer:
 
 ```bash
 python -m venv .venv
@@ -28,10 +14,97 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-The project declares `llama-cpp-python` as its inference dependency; a full
-installation installs it, although the scaffold does not import it yet.
-To install only the scaffold without dependencies, use
-`python -m pip install -e . --no-deps` instead.
+Installation includes `llama-cpp-python`, which may require a C/C++ toolchain.
+GPU acceleration requires a backend-enabled build; see the
+[backend installation instructions](https://llama-cpp-python.readthedocs.io/en/stable/).
+The default runtime uses CPU inference.
 
-See [AGENTS.md](AGENTS.md) for development conventions and
-[ARCHITECTURE.md](ARCHITECTURE.md) for package boundaries and intended direction.
+## Chat
+
+Provide a local GGUF **chat/instruction model**, not an embedding model:
+
+```bash
+python -m reprobe --chat --model /path/to/chat-model.gguf
+```
+
+The model loads once. Enter one message per line; each complete reply is printed
+when ready. Previous turns are included in subsequent requests. Use `/clear` to
+reset conversation history, `/exit` or `/quit` to leave, or EOF (Ctrl+D on Unix).
+Ctrl+C attempts to close the model and exits with status 130. A cleanup failure
+is reported as an error with status 1.
+
+Optional settings:
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--n-ctx` | 4096 | Context token capacity |
+| `--n-gpu-layers` | 0 | GPU layers; -1 requests all layers |
+| `--max-tokens` | 512 | Maximum tokens per reply; must be less than context size |
+| `--temperature` | 0.7 | Nonnegative sampling temperature |
+| `--chat-format` | Model metadata/backend default | Explicit template override |
+
+History is held in memory and is not silently trimmed. Generation failures exit
+with an error; restart with a larger context or shorter conversation when the
+context fills. Model architecture/template support depends on the installed
+`llama-cpp-python` build. Empty, malformed, and non-text/tool-call responses
+are rejected rather than saved to conversation history. A reply can stop before
+`--max-tokens` when the model emits its end token or the context is full.
+No models are downloaded automatically.
+
+Exit statuses are 0 for a normal exit, 1 for model/integration failures, 2 for
+invalid CLI arguments, and 130 for an interrupt with successful cleanup.
+
+## Use from Python
+
+```python
+from pathlib import Path
+from reprobe.chat_types import ModelConfig
+from reprobe.commands import GenerateChatReply
+from reprobe.model import LlamaCppModel
+
+config = ModelConfig(model_path=Path("/path/to/chat-model.gguf"))
+with LlamaCppModel(config) as model:
+    first = GenerateChatReply(model, (), "Hello").execute()
+    second = GenerateChatReply(model, first.history, "What did I just say?").execute()
+    print(second.reply.content)
+```
+
+Configuration requires a `Path`, integer token/layer settings, and a finite,
+nonnegative numeric temperature. Commands return immutable results and do not
+print or mutate supplied history. A replacement model only needs
+`generate_reply(messages)` returning a `ChatReply`. Adapter operations raise
+`ModelError` with the underlying exception retained as a cause.
+
+`load()` reuses an already loaded instance. Successful `close()` is idempotent;
+a failed close retains the handle so Python callers can retry cleanup. If both
+a session operation and cleanup fail, the error reports both failures and keeps
+the original operation's exception chain.
+
+## Repository scaffold
+
+```bash
+python -m reprobe ./path/to/repo
+python -m reprobe --help
+```
+
+Repository mode prints a scaffold notice without validating or accessing the
+path. It cannot be combined with chat/model options. Help and repository mode
+do not import the inference dependency; they also work with a dependency-free
+installation (`python -m pip install -e . --no-deps`).
+
+## Validation
+
+Lightweight tests require neither models nor a GPU:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Run a separate real-model smoke check using your own chat model:
+
+```bash
+printf 'Hello\nWhat did I just say?\n/exit\n' | python -m reprobe --chat --model /path/to/chat-model.gguf
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for Python interfaces and ownership, and
+[AGENTS.md](AGENTS.md) for development conventions.
