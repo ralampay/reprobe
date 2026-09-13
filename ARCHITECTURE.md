@@ -25,9 +25,11 @@ user_input).execute()` independently of the CLI. Messages and replies contain
 application types, not external library schemas. Model instances and conversation
 history are session-local; no network calls or global model state are introduced.
 
-Chat requires `--chat --model PATH` and no repository. Runtime settings are
-explicit CLI/configuration inputs. Defaults use CPU inference, 4096 context
-tokens, 512 maximum reply tokens, temperature 0.7, and backend template selection.
+The CLI requires `--model PATH REPOSITORY`; there is no separate mode flag. The
+repository argument establishes the canonical interface but remains unused while
+evaluation is scaffolded. Runtime settings are explicit CLI/configuration inputs.
+Defaults use CPU inference, 4096 context tokens, 512 maximum reply tokens,
+temperature 0.7, and backend template selection.
 History is in memory, reset by `/clear`, and never automatically truncated.
 Failures leave caller-owned history unchanged and terminate CLI chat with a
 nonzero status. EOF and exit commands return 0; Ctrl+C returns 130 when cleanup
@@ -39,8 +41,9 @@ the handle and is idempotent; loading again after a successful close is allowed.
 
 ## Evaluation remains planned
 
-`python -m reprobe REPOSITORY` preserves the scaffold notice without accessing
-the repository. Evaluation commands, harness rules, repository traversal, and
+`python -m reprobe --model MODEL REPOSITORY` reports the scaffold status without
+accessing the repository, then starts the currently implemented interactive
+model session. Evaluation commands, harness rules, repository traversal, and
 recommendation presentation remain unimplemented. Future commands should inject
 focused model/repository collaborators and return structured findings. Harness
 rules belong with their harnesses; source access belongs in repository components.

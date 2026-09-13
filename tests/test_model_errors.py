@@ -95,7 +95,7 @@ class ModelErrorTests(unittest.TestCase):
         with patch("reprobe.cli.chat", side_effect=KeyboardInterrupt()):
             with contextlib.redirect_stdout(io.StringIO()):
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    status = main(["--chat", "--model", "model.gguf"])
+                    status = main(["--model", "model.gguf", "repo"])
         self.assertEqual(status, 1)
         self.assertIn("KeyboardInterrupt", stderr.getvalue())
         self.assertIn("release failed", stderr.getvalue())

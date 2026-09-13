@@ -50,10 +50,10 @@ class ChatTests(unittest.TestCase):
                 chat(Mock())
 
     def test_cli_invalid_arguments(self):
-        for args in [[], ["--chat"], ["repo", "--chat", "--model", "m.gguf"],
-                     ["repo", "--model", "m.gguf"], ["repo", "--temperature", "0"],
-                     ["--chat", "--model", "m.gguf", "--n-ctx", "0"],
-                     ["--chat", "--model", "m.gguf", "--temperature", "nan"]]:
+        for args in [[], ["repo"], ["--model", "m.gguf"],
+                     ["repo", "--chat", "--model", "m.gguf"],
+                     ["--model", "m.gguf", "repo", "--n-ctx", "0"],
+                     ["--model", "m.gguf", "repo", "--temperature", "nan"]]:
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 main(args)
             self.assertEqual(raised.exception.code, 2)
@@ -62,17 +62,15 @@ class ChatTests(unittest.TestCase):
         for failure, status in [(None, 0), (KeyboardInterrupt(), 130), (ModelError("broken"), 1)]:
             backend = Mock()
             with patch.object(Path, "is_file", return_value=True), patch.dict(sys.modules, {"llama_cpp": SimpleNamespace(Llama=Mock(return_value=backend))}), patch("reprobe.cli.chat", side_effect=failure), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(main(["--chat", "--model", "m.gguf"]), status)
+                self.assertEqual(main(["--model", "m.gguf", "repo"]), status)
             backend.close.assert_called_once()
 
-    def test_lazy_help_and_scaffold(self):
-        script = "from reprobe.cli import main; import sys; main(['repo']); assert 'llama_cpp' not in sys.modules"
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("not implemented", result.stdout)
+    def test_help_uses_canonical_syntax(self):
         result = subprocess.run([sys.executable, "-m", "reprobe", "--help"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
-        self.assertIn("--chat", result.stdout)
+        self.assertIn("--model MODEL", result.stdout)
+        self.assertIn("repository", result.stdout)
+        self.assertNotIn("--chat", result.stdout.split())
 
 
 class ModelTests(unittest.TestCase):

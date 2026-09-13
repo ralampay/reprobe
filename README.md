@@ -19,19 +19,23 @@ GPU acceleration requires a backend-enabled build; see the
 [backend installation instructions](https://llama-cpp-python.readthedocs.io/en/stable/).
 The default runtime uses CPU inference.
 
-## Chat
+## Run
 
-Provide a local GGUF **chat/instruction model**, not an embedding model:
+Provide the repository and a local GGUF **chat/instruction model**, not an
+embedding model:
 
 ```bash
-python -m reprobe --chat --model /path/to/chat-model.gguf
+python -m reprobe --model /path/to/chat-model.gguf /path/to/repo
 ```
 
-The model loads once. Enter one message per line; each complete reply is printed
-when ready. Previous turns are included in subsequent requests. Use `/clear` to
-reset conversation history, `/exit` or `/quit` to leave, or EOF (Ctrl+D on Unix).
-Ctrl+C attempts to close the model and exits with status 130. A cleanup failure
-is reported as an error with status 1.
+Repository evaluation remains scaffolded: the repository argument establishes
+the canonical CLI shape but is not accessed yet. The current implementation
+then loads the model once and starts an interactive terminal session. Enter one
+message per line; each complete reply is printed when ready. Previous turns are
+included in subsequent requests. Use `/clear` to reset conversation history,
+`/exit` or `/quit` to leave, or EOF (Ctrl+D on Unix). Ctrl+C attempts to close
+the model and exits with status 130. A cleanup failure is reported as an error
+with status 1.
 
 Optional settings:
 
@@ -80,16 +84,14 @@ a failed close retains the handle so Python callers can retry cleanup. If both
 a session operation and cleanup fail, the error reports both failures and keeps
 the original operation's exception chain.
 
-## Repository scaffold
+## CLI help
 
 ```bash
-python -m reprobe ./path/to/repo
 python -m reprobe --help
 ```
 
-Repository mode prints a scaffold notice without validating or accessing the
-path. It cannot be combined with chat/model options. Help and repository mode
-do not import the inference dependency; they also work with a dependency-free
+The repository and `--model` arguments are required for a run. Help does not
+import the inference dependency, so it also works with a dependency-free
 installation (`python -m pip install -e . --no-deps`).
 
 ## Validation
@@ -103,7 +105,7 @@ python -m unittest discover -s tests -v
 Run a separate real-model smoke check using your own chat model:
 
 ```bash
-printf 'Hello\nWhat did I just say?\n/exit\n' | python -m reprobe --chat --model /path/to/chat-model.gguf
+printf 'Hello\nWhat did I just say?\n/exit\n' | python -m reprobe --model /path/to/chat-model.gguf /path/to/repo
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for Python interfaces and ownership, and

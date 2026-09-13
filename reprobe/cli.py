@@ -15,9 +15,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="reprobe",
         description="Chat with local GGUF models. Codebase evaluation is not implemented yet.",
     )
-    parser.add_argument("repository", nargs="?", type=Path, help="Repository to evaluate (scaffold)")
-    parser.add_argument("--chat", action="store_true", help="Start interactive chat without a repository")
-    parser.add_argument("--model", type=Path, help="Path to a GGUF chat model")
+    parser.add_argument("repository", type=Path, help="Repository to evaluate (scaffold)")
+    parser.add_argument("--model", required=True, type=Path, help="Path to a GGUF chat model")
     parser.add_argument("--n-ctx", type=int, help="Context size (default: 4096)")
     parser.add_argument("--n-gpu-layers", type=int, help="GPU layers; -1 for all (default: 0)")
     parser.add_argument("--max-tokens", type=int, help="Maximum reply tokens (default: 512)")
@@ -29,23 +28,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         for name in ("n_ctx", "n_gpu_layers", "max_tokens", "temperature", "chat_format")
         if getattr(args, name) is not None
     }
-    if not args.chat:
-        if args.model is not None or model_options:
-            parser.error("model options require --chat")
-        if args.repository is None:
-            parser.error("a repository is required unless --chat is used")
-        print(f"Repository: {args.repository}")
-        print("Reprobe is scaffolded; codebase evaluation is not implemented yet.")
-        return 0
-    if args.repository is not None:
-        parser.error("--chat cannot be combined with a repository")
-    if args.model is None:
-        parser.error("--chat requires --model")
     try:
         config = ModelConfig(model_path=args.model, **model_options)
     except ValueError as exc:
         parser.error(str(exc))
     try:
+        print(f"Repository: {args.repository}")
+        print("Reprobe is scaffolded; codebase evaluation is not implemented yet.")
         print(f"Loading model: {config.model_path}", flush=True)
         with LlamaCppModel(config) as model:
             chat(model)
