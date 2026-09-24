@@ -92,7 +92,7 @@ class ModelErrorTests(unittest.TestCase):
 
     def test_cli_reports_cleanup_failure(self):
         self.backend.close.side_effect = OSError("release failed")
-        with patch("reprobe.cli.chat", side_effect=KeyboardInterrupt()):
+        with patch.object(Path, "exists", return_value=True), patch("reprobe.cli.chat", side_effect=KeyboardInterrupt()):
             with contextlib.redirect_stdout(io.StringIO()):
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
                     status = main(["--model", "model.gguf", "repo"])

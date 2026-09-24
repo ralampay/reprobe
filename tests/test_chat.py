@@ -61,7 +61,7 @@ class ChatTests(unittest.TestCase):
     def test_cli_cleanup_on_all_chat_exits(self):
         for failure, status in [(None, 0), (KeyboardInterrupt(), 130), (ModelError("broken"), 1)]:
             backend = Mock()
-            with patch.object(Path, "is_file", return_value=True), patch.dict(sys.modules, {"llama_cpp": SimpleNamespace(Llama=Mock(return_value=backend))}), patch("reprobe.cli.chat", side_effect=failure), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_file", return_value=True), patch.dict(sys.modules, {"llama_cpp": SimpleNamespace(Llama=Mock(return_value=backend))}), patch("reprobe.cli.chat", side_effect=failure), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(["--model", "m.gguf", "repo"]), status)
             backend.close.assert_called_once()
 
