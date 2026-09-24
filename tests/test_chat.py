@@ -67,7 +67,7 @@ class ChatTests(unittest.TestCase):
 
     def test_help_uses_canonical_syntax(self):
         result = subprocess.run([sys.executable, "-m", "reprobe", "--help"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0)
+        self.assertexistsesult.returncode, 0)
         self.assertIn("--model MODEL", result.stdout)
         self.assertIn("repository", result.stdout)
         self.assertNotIn("--chat", result.stdout.split())
