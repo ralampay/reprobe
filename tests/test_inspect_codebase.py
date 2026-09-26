@@ -3,14 +3,18 @@ from unittest.mock import patch
 
 import pytest
 
-from reprobe.repository import LocalRepository, RepositoryError
-from reprobe.review_commands import InspectCodebase
-from reprobe.review_types import SourceCandidate
+from reprobe.repositories.local import LocalRepository, RepositoryError
+from reprobe.review.commands import InspectCodebase
+from reprobe.review.types import SourceCandidate
 
 def inspect(path):
     return InspectCodebase(path, LocalRepository()).execute()
 
 @pytest.mark.parametrize("name,language", [
+    ("main.go", "go"), ("main.js", "javascript"), ("main.jsx", "javascript"),
+    ("main.mjs", "javascript"), ("main.cjs", "javascript"),
+    ("main.ts", "typescript"), ("main.tsx", "typescript"),
+    ("main.mts", "typescript"), ("main.cts", "typescript"),
     ("main.py", "python"), ("window.pyw", "python"),
     ("main.cpp", "cpp"), ("main.cc", "cpp"), ("main.cxx", "cpp"),
     ("api.h", "cpp"), ("api.hpp", "cpp"), ("api.hh", "cpp"),
@@ -31,7 +35,7 @@ def test_recognizes_supported_names_without_git(tmp_path, name, language):
     assert result.reason == "recognized_source"
 
 def test_no_recognized_source_is_a_result_not_an_error(tmp_path):
-    for name in ("README.md", "pyproject.toml", "app.js", "main.c", "main.go"):
+    for name in ("README.md", "pyproject.toml", "main.c"):
         (tmp_path / name).write_text("example", encoding="utf-8")
 
     result = inspect(tmp_path)
@@ -79,7 +83,7 @@ def test_invalid_root_is_actionable(tmp_path):
 
 def test_filesystem_error_keeps_its_cause(tmp_path):
     failure = PermissionError("access denied")
-    with patch("reprobe.repository.os.walk", side_effect=failure):
+    with patch("reprobe.repositories.local.os.walk", side_effect=failure):
         with pytest.raises(RepositoryError, match="Cannot inspect") as raised:
             inspect(tmp_path)
 
@@ -93,7 +97,11 @@ def test_command_accepts_a_repository_fake(tmp_path):
 
         def discover(self, root):
             assert root == tmp_path
-            return (SourceCandidate("main.py", "python"),)
+            return (SourceCandidate("main.go", "go"), ("main.js", "javascript"), ("main.jsx", "javascript"),
+    ("main.mjs", "javascript"), ("main.cjs", "javascript"),
+    ("main.ts", "typescript"), ("main.tsx", "typescript"),
+    ("main.mts", "typescript"), ("main.cts", "typescript"),
+    ("main.py", "python"),)
 
     result = InspectCodebase(Path("input"), FakeRepository()).execute()
     assert result.is_codebase

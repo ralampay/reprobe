@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from reprobe.chat_types import ChatMessage, ChatReply, ModelConfig
+from reprobe.chat.types import ChatMessage, ChatReply, ModelConfig
 from reprobe.cli import main
-from reprobe.commands import GenerateChatReply
-from reprobe.model import LlamaCppModel, ModelError
-from reprobe.terminal import chat
+from reprobe.models.gguf_metadata import ModelMetadata
+from reprobe.chat.commands import GenerateChatReply
+from reprobe.models.llama_cpp import LlamaCppModel, ModelError
+from reprobe.chat.terminal import chat
 
 
 class ChatTests(unittest.TestCase):
@@ -61,16 +62,16 @@ class ChatTests(unittest.TestCase):
     def test_cli_cleanup_on_all_chat_exits(self):
         for failure, status in [(None, 0), (KeyboardInterrupt(), 130), (ModelError("broken"), 1)]:
             backend = Mock()
-            with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_file", return_value=True), patch.dict(sys.modules, {"llama_cpp": SimpleNamespace(Llama=Mock(return_value=backend))}), patch("reprobe.cli.chat", side_effect=failure), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(main(["--model", "m.gguf", "repo"]), status)
+            with patch.object(Path, "exists", return_value=True), patch.object(Path, "is_file", return_value=True), patch.dict(sys.modules, {"llama_cpp": SimpleNamespace(Llama=Mock(return_value=backend))}), patch("reprobe.cli.GgufMetadataReader.read", return_value=ModelMetadata("llama", 4096)), patch("reprobe.cli.chat", side_effect=failure), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["--model", "m.gguf", "repo", "--chat"]), status)
             backend.close.assert_called_once()
 
     def test_help_uses_canonical_syntax(self):
         result = subprocess.run([sys.executable, "-m", "reprobe", "--help"], capture_output=True, text=True)
-        self.assertexistsesult.returncode, 0)
+        self.assertEqual(result.returncode, 0)
         self.assertIn("--model MODEL", result.stdout)
         self.assertIn("repository", result.stdout)
-        self.assertNotIn("--chat", result.stdout.split())
+        self.assertIn("--chat", result.stdout)
 
 
 class ModelTests(unittest.TestCase):

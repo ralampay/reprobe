@@ -1,22 +1,14 @@
-from dataclasses import dataclass
-from pathlib import Path
+"""Compatibility exports; implementation lives in :mod:`reprobe.review.types`."""
+from reprobe.review.types import (
+    CodebaseInspection as CodebaseInspection,
+    Evidence as Evidence,
+    Omission as Omission,
+    Recommendation as Recommendation,
+    ReviewError as ReviewError,
+    ReviewResult as ReviewResult,
+    SourceCandidate as SourceCandidate,
+    SourceExcerpt as SourceExcerpt,
+    SourceSample as SourceSample,
+)
 
-@dataclass(frozen=True)
-class SourceCandidate:
-    path: str
-    language: str
-
-
-@dataclass(frozen=True)
-class CodebaseInspection:
-    root: Path
-    candidates: tuple[SourceCandidate, ...]
-    reason: str
-
-    @property
-    def is_codebase(self) -> bool:
-        return bool(self.candidates)
-
-    @property
-    def languages(self) -> tuple[str, ...]:
-        return tuple(sorted({item.language for item in self.candidates}))
+__all__ = ['CodebaseInspection', 'Evidence', 'Omission', 'Recommendation', 'ReviewError', 'ReviewResult', 'SourceCandidate', 'SourceExcerpt', 'SourceSample']

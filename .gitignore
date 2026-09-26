@@ -34,6 +34,8 @@ coverage.xml
 # Local models and generated evaluation artifacts
 *.gguf
 models/
+# Track the Python model integration package.
+!/reprobe/models/
 reports/
 
 # Editors and operating systems

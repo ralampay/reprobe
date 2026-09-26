@@ -8,10 +8,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from reprobe.chat_types import ChatMessage, ModelConfig
+from reprobe.chat.types import ChatMessage, ModelConfig
 from reprobe.cli import main
-from reprobe.commands import GenerateChatReply
-from reprobe.model import LlamaCppModel, ModelError
+from reprobe.models.gguf_metadata import ModelMetadata
+from reprobe.chat.commands import GenerateChatReply
+from reprobe.models.llama_cpp import LlamaCppModel, ModelError
 
 
 def response(content="answer", reason="stop", role="assistant"):
@@ -92,10 +93,10 @@ class ModelErrorTests(unittest.TestCase):
 
     def test_cli_reports_cleanup_failure(self):
         self.backend.close.side_effect = OSError("release failed")
-        with patch.object(Path, "exists", return_value=True), patch("reprobe.cli.chat", side_effect=KeyboardInterrupt()):
+        with patch.object(Path, "exists", return_value=True), patch("reprobe.cli.GgufMetadataReader.read", return_value=ModelMetadata("llama", 4096)), patch("reprobe.cli.chat", side_effect=KeyboardInterrupt()):
             with contextlib.redirect_stdout(io.StringIO()):
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    status = main(["--model", "model.gguf", "repo"])
+                    status = main(["--model", "model.gguf", "repo", "--chat"])
         self.assertEqual(status, 1)
         self.assertIn("KeyboardInterrupt", stderr.getvalue())
         self.assertIn("release failed", stderr.getvalue())
