@@ -1,5 +1,6 @@
 """Review response schema, parsing, and supplied-evidence validation."""
 import json
+from copy import deepcopy
 from typing import Any
 
 from reprobe.chat.types import ChatReply
@@ -22,12 +23,20 @@ RECOMMENDATION_SCHEMA = object_schema({
     "category": {"type": "string", "enum": ["fix", "improvement", "feature"]},
     "priority": {"type": "string", "enum": ["high", "medium", "low"]},
     "title": {"type": "string", "minLength": 1, "maxLength": 120},
+    "synopsis": {"type": "string", "minLength": 1, "maxLength": 360},
     "evidence": {"type": "array", "minItems": 1, "maxItems": 2, "items": EVIDENCE_SCHEMA},
     "suggested_changes": TEXT_LIST, "validation_steps": TEXT_LIST,
 })
-REVIEW_SCHEMA = object_schema({"recommendations": {
-    "type": "array", "maxItems": 1, "items": RECOMMENDATION_SCHEMA,
-}})
+def review_schema(max_recommendations: int = 1) -> dict[str, Any]:
+    if type(max_recommendations) is not int or max_recommendations < 1:
+        raise ValueError("Recommendation count must be a positive integer.")
+    return object_schema({"recommendations": {
+        "type": "array", "maxItems": max_recommendations,
+        "items": deepcopy(RECOMMENDATION_SCHEMA),
+    }})
+
+
+REVIEW_SCHEMA = review_schema()
 
 
 def _validate(value: object, schema: dict[str, Any]) -> None:
@@ -54,15 +63,18 @@ def _validate(value: object, schema: dict[str, Any]) -> None:
             raise ValueError("invalid line number")
 
 
-def parse_recommendations(reply: ChatReply, excerpts: tuple[SourceExcerpt, ...]) -> tuple[Recommendation, ...]:
+def parse_recommendations(reply: ChatReply, excerpts: tuple[SourceExcerpt, ...], *,
+                          max_recommendations: int = 1) -> tuple[Recommendation, ...]:
     if reply.finish_reason not in {"stop", "length"}:
         raise ReviewError(f"Unsupported review finish reason: {reply.finish_reason}")
     try:
         data = json.loads(reply.content)
-        _validate(data, REVIEW_SCHEMA)
+        _validate(data, review_schema(max_recommendations))
         ranges = {e.path: e.end_line for e in excerpts}
         results = []
-        for index, item in enumerate(data["recommendations"], 1):
+        priorities = {"high": 0, "medium": 1, "low": 2}
+        ranked = sorted(data["recommendations"], key=lambda item: priorities[item["priority"]])
+        for index, item in enumerate(ranked, 1):
             evidence = []
             for citation in item["evidence"]:
                 if citation["path"] not in ranges or not 1 <= citation["start_line"] <= citation["end_line"] <= ranges[citation["path"]]:
@@ -75,6 +87,7 @@ def parse_recommendations(reply: ChatReply, excerpts: tuple[SourceExcerpt, ...])
             results.append(Recommendation(
                 f"R{index:03}", item["category"], item["priority"], item["title"],
                 tuple(evidence), tuple(item["suggested_changes"]), tuple(item["validation_steps"]),
+                synopsis=" ".join(item["synopsis"].split()),
             ))
         return tuple(results)
     except json.JSONDecodeError as exc:

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from reprobe.models.types import TokenUsage
+
 # Compatibility export: model configuration is shared by chat and review.
 from reprobe.models.types import ModelConfig as ModelConfig
 
@@ -17,6 +19,7 @@ class ChatMessage:
 class ChatReply:
     content: str
     finish_reason: str
+    usage: TokenUsage | None = None
 
 
 @dataclass(frozen=True)

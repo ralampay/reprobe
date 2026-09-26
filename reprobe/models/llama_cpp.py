@@ -1,10 +1,11 @@
 """Explicit GGUF lifecycle and llama-cpp-python integration."""
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 
 from reprobe.chat.types import ChatMessage, ChatReply
-from reprobe.models.types import ModelConfig
+from reprobe.models.types import ModelConfig, TokenUsage
 from reprobe.models.backend_output import suppress_backend_output
 
 
@@ -16,6 +17,7 @@ class LlamaCppModel:
     def __init__(self, config: ModelConfig) -> None:
         self.config = config
         self._model = None
+        self._token_counts: OrderedDict[str, int] = OrderedDict()
 
     def load(self) -> None:
         if self._model is not None:
@@ -61,19 +63,31 @@ class LlamaCppModel:
             raise ModelError("Model is not loaded; call load() before token counting.")
         try:
             with suppress_backend_output():
-                return sum(len(self._model.tokenize(m.content.encode("utf-8"), add_bos=False)) for m in messages)
+                return sum(self._count_content_tokens(m.content) for m in messages)
         except Exception as exc:
             raise ModelError(f"Cannot tokenize review input: {exc}") from exc
+
+    def _count_content_tokens(self, content: str) -> int:
+        # Keep only small, recent messages; never retain backend token arrays.
+        if content in self._token_counts:
+            self._token_counts.move_to_end(content)
+            return self._token_counts[content]
+        count = len(self._model.tokenize(content.encode("utf-8"), add_bos=False))
+        if len(content) <= 65536:
+            self._token_counts[content] = count
+            if len(self._token_counts) > 8:
+                self._token_counts.popitem(last=False)
+        return count
 
     def generate_structured(self, messages: Sequence[ChatMessage],
                             schema: dict[str, Any]) -> ChatReply:
         """Generate against a caller-owned JSON schema, without review rules."""
         return self._complete(messages, schema=schema, operation="Structured")
 
-    def generate_review(self, messages: Sequence[ChatMessage]) -> ChatReply:
+    def generate_review(self, messages: Sequence[ChatMessage], *, max_recommendations: int = 1) -> ChatReply:
         """Compatibility entrypoint for the original review-model capability."""
-        from reprobe.review.contract import REVIEW_SCHEMA
-        return self._complete(messages, schema=REVIEW_SCHEMA, operation="Review")
+        from reprobe.review.contract import review_schema
+        return self._complete(messages, schema=review_schema(max_recommendations), operation="Review")
 
     def _complete(self, messages: Sequence[ChatMessage], *, operation: str,
                   schema: dict[str, Any] | None = None) -> ChatReply:
@@ -126,7 +140,16 @@ class LlamaCppModel:
         reason = choice.get("finish_reason")
         if reason not in ("stop", "length"):
             raise ValueError(f"unsupported chat finish reason: {reason!r}")
-        return ChatReply(content, reason)
+        usage = None
+        raw_usage = response.get("usage")
+        if raw_usage is not None:
+            if not isinstance(raw_usage, dict):
+                raise ValueError("model returned invalid token usage")
+            counts = [raw_usage.get(key) for key in ("prompt_tokens", "completion_tokens")]
+            if any(type(count) is not int or count < 0 for count in counts):
+                raise ValueError("model returned invalid prompt/completion token counts")
+            usage = TokenUsage(*counts)
+        return ChatReply(content, reason, usage)
 
     def close(self) -> None:
         model = self._model
@@ -137,6 +160,7 @@ class LlamaCppModel:
             except Exception as exc:
                 raise ModelError(f"Cannot release model resources: {exc}") from exc
             self._model = None
+        self._token_counts.clear()
 
     def __enter__(self) -> "LlamaCppModel":
         self.load()

@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from reprobe.models.types import TokenUsage
+
 
 class ReviewError(RuntimeError):
     """Review cannot produce a trustworthy structured result."""
@@ -67,6 +69,7 @@ class Recommendation:
     evidence: tuple[Evidence, ...]
     suggested_changes: tuple[str, ...]
     validation_steps: tuple[str, ...]
+    synopsis: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ class ReviewResult:
     input_tokens: int | None = None
     input_budget: int | None = None
     generation_attempts: int = 0
+    token_usage: tuple[TokenUsage | None, ...] = ()
 
 
 @dataclass(frozen=True)

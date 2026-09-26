@@ -38,10 +38,12 @@ def _positive(value: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="reprobe", description="Review source code with a local GGUF model; show one prioritized recommendation.")
+    parser = argparse.ArgumentParser(prog="reprobe", description="Review source code with a local GGUF model; show prioritized recommendations.")
     parser.add_argument("repository", type=Path, help="Repository directory to review")
     parser.add_argument("--model", required=True, type=_gguf_model_path, help="Path to a local GGUF chat/instruction model")
     parser.add_argument("--output-json", type=Path, metavar="PATH", help="Also save structured JSON to PATH; use - for JSON-only stdout")
+    parser.add_argument("-n", type=_positive, metavar="COUNT", help="Number of top recommendations (default: 1)")
+    parser.add_argument("--query", help="Focus the review on this request (quote multiword queries)")
     parser.add_argument("--chat", action="store_true", help="Start interactive chat instead of a repository review")
     parser.add_argument("--n-ctx", type=_positive, help="Context tokens (auto: model context capped at 8192; fallback 4096)")
     parser.add_argument("--max-tokens", type=_positive, help="Output tokens (auto: min(2048, context // 4))")
@@ -64,6 +66,14 @@ def _model_options(args: argparse.Namespace) -> dict:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.chat and args.n is not None:
+        parser.error("-n is available for repository reviews, not --chat")
+    if args.query is not None:
+        args.query = args.query.strip()
+        if not args.query:
+            parser.error("--query must not be empty")
+        if args.chat:
+            parser.error("--query is available for repository reviews, not --chat")
     if args.chat and args.output_json is not None:
         parser.error("--output-json is available for repository reviews, not --chat")
     if args.output_json is not None and args.output_json != Path("-"):
@@ -102,7 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     context = SourceContext(repository, args.max_files, args.max_lines_per_file)
                     review_command = EvaluateRepository(root, repository, context, model,
                                                 settings.review_input_budget,
-                                                on_progress=progress.update)
+                                                on_progress=progress.update, query=args.query,
+                                                max_recommendations=args.n if args.n is not None else 1)
                     result = review_command.execute()
                 progress.update("close")
             if not args.chat:

@@ -2,8 +2,8 @@
 
 Review a repository using a **local GGUF chat/instruction model**. Reprobe
 recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript and produces a
-focused terminal report with the single highest-priority fix, improvement, or
-feature supported by the sampled code. You can also save the structured JSON.
+focused terminal report with the highest-priority fixes, improvements, or
+features supported by the sampled code (one by default). You can also save the structured JSON.
 It does not modify files, execute repository code, or download models.
 
 ## Install
@@ -33,9 +33,41 @@ python -m reprobe --model /path/to/model.gguf /path/to/repo --output-json review
 reprobe --model /path/to/model.gguf /path/to/repo --output-json - > review.json
 ```
 
+Choose how many top recommendations to request with `-n` (default: `1`):
+
+```bash
+python -m reprobe --model /path/to/model.gguf /path/to/repo -n 5 \
+  --query "look for inefficiencies or antipatterns" --output-json review.json
+```
+
+Terminal findings are rendered with Rich as separate item cards: numbered panels,
+priority-colored borders, a proposed-fix synopsis, evidence, and unchecked action
+and validation checklists. The review summary and token usage appear above the
+cards. Borders and spacing stay readable when color is disabled. Findings are displayed and
+exported in priority order, each with its own synopsis,
+evidence, suggested changes, and validation steps. The model returns fewer than
+requested when evidence is insufficient rather than inventing findings. `-n` must
+be a positive integer and is unavailable with `--chat`. It does not automatically
+increase token limits; if a larger report truncates, increase `--max-tokens` (and
+`--n-ctx` if needed) or request fewer findings. Usage totals cover the entire review.
+
+Focus a review with an optional query (quote it as one argument):
+
+```bash
+python -m reprobe --model /path/to/model.gguf /path/to/repo \
+  --query "look for inefficiencies in the code or antipatterns"
+```
+
+With `--query`, the model selects up to the requested number of evidence-backed recommendations relevant to
+that request, or returns no recommendation if the sample does not support one.
+Without it, the default general review prompt applies. The query is retained on
+retries and included in the input token budget; it does not change file sampling
+or enable code execution. Blank queries and combining `--query` with `--chat`
+are rejected. The model-path flag is `--model`.
+
 Reprobe loads the model once, reviews a bounded sample, shows a readable report,
-and exits. The report includes a priority/category badge, one recommendation,
-source evidence, suggested changes, validation steps, and coverage. On a terminal,
+and exits. The report includes a priority/category badge for each recommendation,
+a short synopsis, source evidence, suggested changes, validation steps, coverage, and token usage. On a terminal,
 an animated spinner and elapsed seconds show the active
 routine: model inspection/loading, source scanning, context fitting, input-budget
 checking, generation, validation, retries, and cleanup. Chat replies also have a
@@ -49,6 +81,9 @@ Sampling defaults to at most 12
 readable files, round-robin across detected languages, with the first 80 lines
 per file and a 64 KiB read cap. Excerpts shrink further to fit the model context.
 The report identifies supplied ranges, truncation, and omitted files.
+Prompts use compact JSON with numbered source-line pairs to reduce input overhead.
+A bounded per-model cache avoids repeatedly tokenizing unchanged messages during
+context fitting and preflight checks; it is cleared when the model closes.
 
 Discovery excludes dependencies, build output, caches, and symlinks before
 sampling. This includes `env`/`ENV`, `.venv`, `node_modules`, `vendor`,
@@ -76,8 +111,8 @@ This is a sampled review, not
 an exhaustive audit or compiler analysis. Findings need human review. An empty
 recommendation list is valid when there is insufficient evidence. Discovery counts
 all eligible source files, but the model sees only the reported excerpts. It is
-instructed to compare those excerpts as one repository and choose one actionable
-priority, rather than produce an item for every file. The priority label remains
+instructed to compare those excerpts as one repository and choose the requested number of top actionable
+priorities, rather than produce an item for every file. The priority label remains
 honest: the strongest finding can be medium or low when no high-risk issue is
 supported by evidence.
 
@@ -131,7 +166,7 @@ overhead; increase context or reduce sampling if generation reports a limit.
 ## JSON contract
 
 The exported envelope has the same keys on success and runtime failure.
-`recommendations` contains zero or one item. Example fields
+`recommendations` contains zero to `-n` items (default: one). Example fields
 below illustrate one recommendation; actual findings depend on the supplied code:
 
 ```json
@@ -160,11 +195,30 @@ below illustrate one recommendation; actual findings depend on the supplied code
     "input_budget": 2560,
     "generation_attempts": 1
   },
+  "token_usage": {
+    "input_tokens": 940,
+    "output_tokens": 160,
+    "total_tokens": 1100,
+    "complete": true,
+    "attempts": [{"input_tokens": 940, "output_tokens": 160, "total_tokens": 1100}]
+  },
+  "context_usage": {
+    "configured_context_tokens": 4096,
+    "model_context_tokens": 4096,
+    "attempts": [{
+      "attempt": 1,
+      "used_tokens": 1100,
+      "configured_context_percent": 26.86,
+      "model_context_percent": 26.86,
+      "remaining_context_tokens": 2996
+    }]
+  },
   "recommendations": [{
     "id": "R001",
     "category": "improvement",
     "priority": "medium",
     "title": "Validate empty input",
+    "synopsis": "Blank input can cause processing failures. Reject empty values before processing to prevent those failures.",
     "evidence": [{"path": "main.py", "start_line": 2, "end_line": 3, "explanation": "Input is used without checking for an empty value."}],
     "suggested_changes": ["Reject empty input before processing."],
     "validation_steps": ["Test empty and nonempty input."]
@@ -172,6 +226,49 @@ below illustrate one recommendation; actual findings depend on the supplied code
   "errors": []
 }
 ```
+
+Each recommendation includes `synopsis`: a short, self-contained explanation of
+the problem, proposed fix, and expected benefit. It is displayed under `SYNOPSIS`
+and exported as `recommendations[0].synopsis`, ready for a future text-to-speech
+consumer. The model is instructed to use one or two plain-language sentences,
+without Markdown, code, file paths, or line references, and to describe a proposed
+fix rather than claim it was applied. The field is required and limited to 360
+characters; whitespace is normalized. Empty/error reports have no recommendation
+synopsis. Speech synthesis itself is not implemented.
+
+The terminal report displays actual backend-reported usage, for example:
+
+```text
+Tokens used 1,100 total (940 input + 160 output; all attempts)
+```
+
+The report also shows the model's maximum training context from GGUF metadata,
+the configured context window, and actual context usage for each attempt:
+
+```text
+Model max   262,144 tokens (GGUF training context)
+Context     8,192 tokens configured; 2,048 output token limit
+Context used Attempt 1: 918 / 8,192 tokens (11.21% configured; 0.35% model max)
+```
+
+The `context_usage` JSON object contains both context limits and per-attempt
+used tokens, percentages, and remaining configured-context tokens. Usage is
+actual backend-reported input plus output, including template tokens. Retries
+use separate windows, so cumulative usage is never divided by one context limit.
+The GGUF training context is a model reference limit, not a guarantee that your
+hardware/backend can run that window or generate that many output tokens. Missing
+metadata is shown as unknown; missing usage gives null percentages. Limits are
+reported without changing your runtime settings.
+
+The JSON `token_usage` object includes aggregate input/output/total counts and
+per-attempt counts, including truncated attempts before a retry. Input includes
+chat-template tokens reported by the backend; output includes the generated
+structured response. These are inference token counts, not a hardware-work or
+billing measurement. The separate `Preflight` line is the content-only input
+budget check, not consumed-token usage. If any attempted generation lacks usage,
+aggregate counts are `null`, `complete` is false, and the display says unavailable;
+known per-attempt counts remain in JSON. No inference means zero tokens.
+Usage survives recommendation-validation errors and cleanup failures.
 
 Statuses are `completed`, `no_supported_source`, and `error`. Categories are
 `fix`, `improvement`, and `feature`; priorities are `high`, `medium`, and `low`.
@@ -186,8 +283,8 @@ Before inference, source excerpts are fitted to the input budget and the final
 prompt is checked again. A fitted prompt cannot guarantee the answer will fit
 its separate output limit. To reduce overruns, review fields and list lengths
 are bounded. If generation ends with incomplete JSON at the output limit,
-Reprobe retries once, using the same limits, asking for at most one concise
-recommendation and re-fitting source context for that prompt. It does not reload
+Reprobe retries once using the same limits and requested count, asking for concise
+recommendations and re-fitting source context for that prompt. It does not reload
 the model or silently increase explicit token limits.
 
 A complete, validated JSON response is usable even if generation hit the token
@@ -267,7 +364,7 @@ reprobe --help
 
 Tests use fake inference models and small metadata-only GGUF fixtures; no GPU or
 inference weights are needed. For a lightweight development environment install
-with `--no-deps` and separately install `pytest`, `gguf`, and `pathspec`.
+with `--no-deps` and separately install `pytest`, `gguf`, `pathspec`, and `rich`.
 
 Run real inference separately with your own GGUF:
 

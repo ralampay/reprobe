@@ -43,5 +43,5 @@ class PrepareReviewContext:
                 omissions.append(Omission(excerpt.path, "context_limit"))
                 excerpts.pop(index)
             if not excerpts:
-                raise ReviewError("Context is too small for review instructions and source; increase --n-ctx or reduce --max-tokens.")
+                raise ReviewError("Context is too small for review instructions and source; increase --n-ctx, reduce --max-tokens, or shorten the review query.")
         return SourceSample(tuple(excerpts), tuple(omissions))

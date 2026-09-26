@@ -16,6 +16,7 @@ from reprobe.review.types import ReviewError, SourceExcerpt
 
 def finding():
     return {"category": "fix", "priority": "high", "title": "Reject blank input",
+            "synopsis": 'Reject blank input before processing to prevent invalid values from reaching the application.',
             "evidence": [{"path": "main.py", "start_line": 1, "end_line": 1,
                           "explanation": "Empty input reaches processing without validation."}],
             "suggested_changes": ["Reject an empty value before processing."],
@@ -41,7 +42,7 @@ def run_review(tmp_path, extra=(), items=None):
 def test_readable_default_and_no_implicit_export(tmp_path, capsys):
     assert run_review(tmp_path) == 0
     output = capsys.readouterr().out
-    for expected in ("REPROBE / PRIORITY REVIEW", "TOP RECOMMENDATION", "[HIGH] [FIX]",
+    for expected in ("REPROBE / PRIORITY REVIEW", "ITEM 1 OF 1", "[HIGH] [FIX]",
                      "Reject blank input", "main.py:1", "SUGGESTED CHANGE", "HOW TO VALIDATE"):
         assert expected in output
     assert "\x1b" not in output
@@ -53,7 +54,7 @@ def test_export_preserves_structure_and_readable_output(tmp_path, capsys):
     assert run_review(tmp_path, ["--output-json", str(destination)]) == 0
     captured = capsys.readouterr()
     report = json.loads(destination.read_text())
-    assert "TOP RECOMMENDATION" in captured.out
+    assert "ITEM 1 OF 1" in captured.out
     assert "JSON report saved" in captured.err
     assert len(report["recommendations"]) == 1
     assert report["recommendations"][0]["title"] == "Reject blank input"
@@ -74,7 +75,7 @@ def test_empty_finding_is_an_explicit_terminal_state(tmp_path, capsys):
 def test_export_failure_keeps_readable_result_and_returns_failure(tmp_path, capsys):
     assert run_review(tmp_path, ["--output-json", str(tmp_path / "missing" / "result.json")]) == 1
     captured = capsys.readouterr()
-    assert "TOP RECOMMENDATION" in captured.out
+    assert "ITEM 1 OF 1" in captured.out
     assert "Cannot save JSON report" in captured.err
 
 
@@ -136,3 +137,59 @@ def test_chat_rejects_output_file_and_model_cannot_be_overwritten(tmp_path):
         with pytest.raises(SystemExit) as exc:
             main(["--model", str(model), str(tmp_path), *args])
         assert exc.value.code == 2
+
+
+def test_synopsis_round_trips_to_json_and_terminal(tmp_path, capsys):
+    destination = tmp_path / "report.json"
+    item = finding()
+    item["synopsis"] = "  Blank input can cause failures.\n Reject it before processing.  "
+    assert run_review(tmp_path, ["--output-json", str(destination)], [item]) == 0
+    report = json.loads(destination.read_text())
+    expected = "Blank input can cause failures. Reject it before processing."
+    assert report["recommendations"][0]["synopsis"] == expected
+    output = capsys.readouterr().out
+    assert expected in output
+    assert "SYNOPSIS" in output
+    assert output.index("SYNOPSIS") < output.index("WHY THIS MATTERS")
+
+
+@pytest.mark.parametrize("synopsis", [None, "", "   ", 123, "x" * 361])
+def test_invalid_synopsis_is_rejected(synopsis):
+    item = finding()
+    item["synopsis"] = synopsis
+    with pytest.raises(ReviewError, match="Invalid structured review"):
+        parse_recommendations(ChatReply(json.dumps({"recommendations": [item]}), "stop"),
+                              (SourceExcerpt("main.py", "python", "pass", False),))
+
+
+def test_missing_synopsis_is_rejected():
+    item = finding()
+    del item["synopsis"]
+    with pytest.raises(ReviewError, match="missing object fields"):
+        parse_recommendations(ChatReply(json.dumps({"recommendations": [item]}), "stop"),
+                              (SourceExcerpt("main.py", "python", "pass", False),))
+
+
+def test_retry_keeps_spoken_synopsis_instructions():
+    from reprobe.review.prompt import compact_review_messages
+    prompt = compact_review_messages((), query="Find inefficiencies")[0].content
+    assert "Write synopsis" in prompt
+    assert "It will be read aloud" in prompt
+    assert "never claim the fix has been applied" in prompt
+    assert "under 100 characters" in prompt
+
+
+def test_rich_cards_keep_markup_literal_and_fit_narrow_unicode_output():
+    from rich.cells import cell_len
+    from reprobe.output.json_report import review_report
+    report = review_report(Path("repo"))
+    item = finding()
+    item.update(id="R001", title="[red]修复输入[/red]", synopsis="Literal [link=https://example.com]text[/link].")
+    report["recommendations"] = [item]
+    output = format_report(report, width=32)
+    assert "[red]修复输入[/red]" in output
+    assert "[ ]" in output
+    assert "ITEM 1 OF 1" in output
+    assert "PROPOSED" in output
+    assert "\x1b" not in output
+    assert all(cell_len(line) <= 32 for line in output.splitlines())

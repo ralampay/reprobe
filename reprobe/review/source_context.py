@@ -15,8 +15,10 @@ class SourceContext:
 
     def prepare(self, inspection: CodebaseInspection,
                 count_tokens: Callable[[tuple[ChatMessage, ...]], int],
-                input_budget: int) -> tuple[tuple[SourceExcerpt, ...], tuple[Omission, ...]]:
+                input_budget: int, *,
+                build_messages: Callable[[tuple[SourceExcerpt, ...]], tuple[ChatMessage, ...]] = review_messages,
+                ) -> tuple[tuple[SourceExcerpt, ...], tuple[Omission, ...]]:
         sample = PrepareReviewContext(
-            inspection, self._sampler, review_messages, count_tokens, input_budget,
+            inspection, self._sampler, build_messages, count_tokens, input_budget,
         ).execute()
         return sample.excerpts, sample.omissions

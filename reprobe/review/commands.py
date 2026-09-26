@@ -1,12 +1,13 @@
 """Reusable repository inspection and review workflows."""
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from functools import partial
 from dataclasses import replace
 from typing import Protocol
 
 from reprobe.chat.types import ChatMessage, ChatReply
 from reprobe.repositories.local import LocalRepository
-from reprobe.review.contract import parse_recommendations
+from reprobe.review.contract import parse_recommendations, review_schema
 from reprobe.review.prompt import review_messages, compact_review_messages
 from reprobe.review.types import CodebaseInspection, ReviewResult, Omission, ReviewError, TruncatedReviewError
 from reprobe.review.source_context import SourceContext
@@ -15,7 +16,7 @@ from reprobe.review.source_context import SourceContext
 class ReviewModel(Protocol):
     """Only inference capabilities required by a bounded review."""
     def count_message_tokens(self, messages: Sequence[ChatMessage]) -> int: ...
-    def generate_review(self, messages: Sequence[ChatMessage]) -> ChatReply: ...
+    def generate_review(self, messages: Sequence[ChatMessage], *, max_recommendations: int = 1) -> ChatReply: ...
 
 
 class InspectCodebase:
@@ -34,7 +35,13 @@ class EvaluateRepository:
     """Coordinate inspection, bounded context, generation, and validation."""
     def __init__(self, path: Path, repository: LocalRepository, context: SourceContext,
                  model: ReviewModel, input_budget: int, *,
-                 on_progress: Callable[[str], None] | None = None) -> None:
+                 on_progress: Callable[[str], None] | None = None,
+                 query: str | None = None, max_recommendations: int = 1) -> None:
+        if query is not None and not query.strip():
+            raise ReviewError("Review query must not be empty.")
+        review_schema(max_recommendations)
+        self._max_recommendations = max_recommendations
+        self._query = query.strip() if query is not None else None
         self._path = path
         self._repository = repository
         self._context = context
@@ -64,27 +71,31 @@ class EvaluateRepository:
                 self._report_progress("retry")
             else:
                 self._report_progress("context")
-            builder = compact_review_messages if attempt else review_messages
-            overhead = 0
-            if attempt:
-                overhead = max(0, self._model.count_message_tokens(builder(()))
-                               - self._model.count_message_tokens(review_messages(())))
+            builder = partial(compact_review_messages if attempt else review_messages,
+                              query=self._query, max_recommendations=self._max_recommendations)
             excerpts, omissions = self._context.prepare(
-                inspection, self._model.count_message_tokens, self._input_budget - overhead,
+                inspection, self._model.count_message_tokens, self._input_budget,
+                build_messages=builder,
             )
             messages = builder(excerpts)
             tokens = self._model.count_message_tokens(messages)
             self._result = ReviewResult(inspection, excerpts, omissions, (), tokens,
-                                        self._input_budget, attempt)
+                                        self._input_budget, attempt, self._result.token_usage)
             if tokens > self._input_budget:
                 raise ReviewError("Review input exceeds the available token budget; increase --n-ctx or reduce --max-tokens.")
             self._report_progress("preflight")
-            self._result = replace(self._result, generation_attempts=attempt + 1)
+            self._result = replace(self._result, generation_attempts=attempt + 1,
+                                   token_usage=self._result.token_usage + (None,))
             self._report_progress("generate")
-            reply = self._model.generate_review(messages)
+            if self._max_recommendations == 1:
+                reply = self._model.generate_review(messages)
+            else:
+                reply = self._model.generate_review(messages, max_recommendations=self._max_recommendations)
+            self._result = replace(self._result,
+                                   token_usage=self._result.token_usage[:-1] + (reply.usage,))
             self._report_progress("validate")
             try:
-                recommendations = parse_recommendations(reply, excerpts)
+                recommendations = parse_recommendations(reply, excerpts, max_recommendations=self._max_recommendations)
             except TruncatedReviewError as exc:
                 if not attempt:
                     continue
@@ -92,7 +103,7 @@ class EvaluateRepository:
                     "The model exceeded its output token limit on both the initial review and "
                     "one concise retry. The input prompt fit its budget, but the answer did not fit "
                     "its output allowance. Increase --max-tokens (and --n-ctx if needed), "
-                    "or reduce --max-files. Coverage from the last attempt is retained."
+                    "or request fewer recommendations with -n. Coverage from the last attempt is retained."
                 ) from exc
             self._result = replace(self._result, recommendations=recommendations)
             return self._result

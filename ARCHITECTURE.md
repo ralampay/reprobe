@@ -4,7 +4,7 @@
 
 Reprobe performs a bounded, local model-assisted repository review by default.
 It recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript source files.
-It returns one prioritized recommendation, never modifies source, executes repository code,
+It returns up to the requested number of prioritized recommendations (default one), never modifies source, executes repository code,
 or calls a remote model. Language support is source recognition and model
 reasoning, not compiler-backed analysis. `--chat` enables the existing interactive
 chat use case instead.
@@ -80,7 +80,7 @@ does not initialize models or import external inference dependencies.
 | `chat/commands.py`, `chat/terminal.py` | Existing chat command and terminal/session presentation respectively |
 
 Commands accept collaborators through constructors. `ReviewModel` requires only
-`count_message_tokens(messages)` and `generate_review(messages)`;
+`count_message_tokens(messages)` and `generate_review(messages, *, max_recommendations=1)`;
 `ChatModel` requires `generate_reply(messages)`. Both return application types,
 not backend dictionaries. The small metadata reader protocol exposes
 `read(path) -> ModelMetadata`. Repository/context collaborators can be replaced
@@ -91,8 +91,16 @@ context-manager support. Failed cleanup retains the backend handle for retry.
 Combined operation/cleanup failures preserve the original cause and report both.
 Commands never own model lifetime or print CLI output.
 
-`EvaluateRepository` accepts an optional keyword-only `on_progress(stage)` callback.
-It emits scan/context/preflight/generate/validate stages, plus retry and empty-source
+`EvaluateRepository` accepts an optional keyword-only `query` and
+`on_progress(stage)` callback. A query scopes recommendation selection while
+retaining the default evidence and response-contract requirements. The CLI
+normalizes/rejects blank queries and disallows them in chat mode; Python command
+callers also receive an explicit error for a blank query. `review_messages` and
+`compact_review_messages` accept keyword-only `query=None`. The prompt includes
+it separately from source data and requests only relevant findings. Omitting it
+preserves the default general-review prompt.
+
+The command emits scan/context/preflight/generate/validate stages, plus retry and empty-source
 stages, and is silent by default. The CLI injects `ProgressReporter.update`, owns
 metadata/loading/cleanup/completion messages, and stops the reporter before errors.
 The chat presenter scopes a reporter around each generation, leaving prompts and
@@ -206,6 +214,15 @@ Each read is capped at 64 KiB and 80 lines by default. Binary/non-UTF-8, empty,
 unreadable, and omitted source files are recorded with reasons when a review can
 proceed. If no readable source remains, review fails explicitly.
 
+Review prompts serialize the schema and source data with compact JSON separators.
+Source lines are `[line_number, source_text]` pairs, with explicit excerpt ranges;
+the system prompt explains this encoding. Evidence validation and report formats
+are unchanged. The adapter caches message token counts per model instance using
+an eight-entry least-recently-used cache, only for messages of at most 65,536
+characters. It stores counts rather than token arrays, skips caching failures,
+and clears cached text/counts on successful close. This avoids repeated tokenizer
+calls for unchanged instructions and final preflight messages.
+
 The context preparer counts message content with the loaded model's tokenizer,
 uses `ResolvedModelSettings.review_input_budget` to reserve output tokens plus
 512 tokens for template overhead, and progressively
@@ -214,13 +231,25 @@ reservation is an estimate: custom templates can still exceed it, in which case
 the adapter returns an actionable context error. At least one source line must
 fit. Source text is treated as untrusted data in the prompt.
 
-The prompt asks the model to compare the entire supplied sample and choose one
-highest-priority actionable issue, weighing impact and evidence. It prioritizes
+The prompt asks the model to compare the entire supplied sample and choose the
+requested number of highest-priority actionable issues, weighing impact and evidence. It prioritizes
 correctness, security, reliability, and data-loss risks over style or speculative
 features, and asks the evidence explanation to justify the issue's impact. It
 must not inflate priority or emit one finding per file. The generation schema
-and application validator both enforce at most one recommendation.
-The contract bounds titles to 120 characters, explanations/steps to 240 characters,
+and application validator both enforce the requested maximum, using
+`review_schema(max_recommendations)`; `REVIEW_SCHEMA` remains the one-item default
+for existing imports. The schema builder returns independent schemas to avoid
+cross-request mutation. `EvaluateRepository` validates a positive integer limit
+and passes it to prompting, generation, parsing, and retry instructions. The CLI
+exposes `-n COUNT`, default one, and rejects it in chat mode. Existing one-item
+model collaborators still receive the original one-argument generation call;
+collaborators supporting multiple findings accept the new keyword. The parser
+stably sorts by priority before assigning IDs. Terminal and JSON output include
+all returned findings, each with a synopsis. Insufficient evidence permits fewer
+findings. Token settings are unchanged; the limit does not trigger extra model
+calls, and aggregate usage covers the complete review.
+The contract bounds titles to 120 characters, synopses to 360 characters,
+explanations/steps to 240 characters,
 evidence lists to two entries, and change/test lists to three entries. Application
 validation independently enforces these bounds, fields, enums, types, nonempty
 steps, and evidence within supplied line ranges. An empty recommendation list is valid.
@@ -228,7 +257,10 @@ steps, and evidence within supplied line ranges. An empty recommendation list is
 After context fitting, `EvaluateRepository` checks the final prompt token count
 against the available input budget before each inference attempt. On incomplete
 JSON with a `length` finish reason, it retries once with a compact prompt asking
-for one finding. Retry instruction overhead is reserved before re-fitting source;
+for concise findings with the same requested count. `SourceContext.prepare` accepts an optional keyword-only
+`build_messages` collaborator; the command supplies the actual prompt builder
+for each attempt, including the query and retry instructions. Context fitting
+therefore counts that exact input rather than estimating additional overhead;
 the model instance and configured output/context limits are unchanged. Complete,
 validated JSON is accepted with either `stop` or `length`. Other invalid output
 is not retried, and partial JSON is never salvaged as a successful report.
@@ -242,18 +274,75 @@ coverage fields are additive within the version 1.0 envelope. A retry that also
 truncates raises an actionable error that distinguishes input and output limits. Evidence validation verifies locations,
 not semantic correctness of model claims; users still review proposed changes.
 
+### Inference token accounting
+
+`models.types.TokenUsage` holds backend-independent input/output counts and a
+computed total. `ChatReply.usage` is optional, retaining the existing two-argument
+constructor. The llama-cpp adapter maps response `usage.prompt_tokens` and
+`usage.completion_tokens` into this value without additional tokenization or
+inference. Present but malformed counts are integration errors; absent usage is
+unknown, never inferred from configured limits or preflight counts.
+
+`ReviewResult.token_usage` stores one optional value per inference attempt.
+`EvaluateRepository` records an unknown slot before invoking generation, replaces
+it on reply, and preserves previous attempts across retries and error snapshots.
+Usage is retained before recommendation validation. The serializer adds
+`token_usage` to the version 1.0 envelope: aggregate `input_tokens`,
+`output_tokens`, `total_tokens`, `complete`, and an ordered `attempts` list.
+If any attempt is unknown, aggregate counts are null and complete is false;
+known attempts remain visible. No inference has zero counts and an empty list.
+
+The terminal renderer labels actual usage `Tokens used` and the separate input
+budget estimate `Preflight`. Totals include all attempts, including truncated
+responses. These backend-reported counts include template input and generated
+output; they do not measure cached-versus-computed tokens or device utilization.
+
+`output/json_report.py` derives `context_usage` from resolved model settings and
+backend usage, without loading or querying the model again. It includes
+`configured_context_tokens`, `model_context_tokens` (GGUF training context), and
+per-attempt `used_tokens`, `configured_context_percent`, `model_context_percent`,
+and `remaining_context_tokens`. Percentages use actual input plus output, rounded
+to two decimals; remaining tokens use the configured window and floor at zero.
+Retries are independent context windows, so cumulative totals are never used as
+context occupancy. Missing settings, training metadata, or usage yield null
+fields rather than invented limits or percentages. No inference has no attempt
+entries. The terminal shows `Model max`, configured `Context` and output limit,
+and a `Context used` line for each attempt. GGUF training context is reported as
+a reference limit rather than a claim about hardware capacity or maximum output.
+
 ## Output, errors, and extensibility
 
 The version 1.0 envelope always has `schema_version`, `status`, `repository`,
-`languages`, `model`, `coverage`, `recommendations`, and `errors`. Runtime failures
+`languages`, `model`, `coverage`, `token_usage`, `context_usage`, `recommendations`, and `errors`. Runtime failures
 use the same envelope with empty recommendations. Before settings/review are
 available, model is null and coverage is empty; after inspection, partial coverage
 is retained on failure. The default stdout display is a readable report rendered
-from that same envelope. It shows priority/category, title, cited evidence,
+from that same envelope. It shows priority/category, title, synopsis, cited evidence,
 change steps, validation, coverage, and explicit empty/error states. The CLI
 chooses terminal width and enables color only on a TTY unless `NO_COLOR` is set
 or `TERM=dumb`. The renderer strips control characters from model/path text and
-wraps long content. Help/argument errors and explicit chat retain conventional text.
+wraps long content. `output/terminal_report.py` uses Rich panels for numbered item
+cards, with priority-colored borders, titles, a PROPOSED status, synopsis, evidence,
+and unchecked action/validation checklists. Rich tables align summary metadata
+and checklist markers. A local Console renders into StringIO, so `format_report`
+remains a pure string-returning presentation interface; CLI stdout ownership and
+JSON exports are unchanged. All model/path strings are sanitized and passed as
+literal Text, never Rich markup. Explicit width/color settings preserve redirected
+output and NO_COLOR behavior. Rich adds no inference or domain dependency. Help/argument errors and explicit chat retain conventional text.
+
+`Recommendation.synopsis` is a required nonempty field in the generation schema,
+validated alongside the rest of the finding and normalized to single-spaced text
+by the parser. The prompt requests one or two standalone spoken-language sentences
+covering problem, proposed change, and benefit, avoiding Markdown/code/location
+references or claims of an applied fix. This is generated in the existing review
+call and retained on concise retries (which request shorter fields). Report
+serialization includes it at `recommendations[0].synopsis`; the terminal renders
+the same text under `SYNOPSIS`. Future speech integration can consume this field
+without parsing presentation text. No speech dependency or additional inference
+is introduced. The dataclass defaults to an empty string for existing Python
+constructors, but new model replies must supply a valid synopsis. Empty/error
+reports keep an empty recommendation list rather than invent a fix synopsis.
+The response contract validates structure/length, not semantic speaking quality.
 
 `--output-json PATH` keeps the readable display and additionally saves the full
 envelope, including runtime failures. `WriteJsonReport` serializes first, writes

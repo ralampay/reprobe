@@ -59,3 +59,14 @@ class ModelConfig:
 class ModelMetadata:
     architecture: str | None = None
     context_length: int | None = None
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """Actual inference usage reported by the backend, not preflight estimates."""
+    input_tokens: int
+    output_tokens: int
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens

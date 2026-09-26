@@ -35,6 +35,44 @@ def _coverage_report(result: ReviewResult | None) -> dict[str, object]:
     }
 
 
+def _token_usage_report(result: ReviewResult | None) -> dict[str, object]:
+    usages = result.token_usage if result is not None else ()
+    count = result.generation_attempts if result is not None else 0
+    attempts = [None if usage is None else {
+        "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+    } for usage in usages]
+    # Older Python callers can construct results without usage information.
+    attempts.extend([None] * max(0, count - len(attempts)))
+    complete = all(usage is not None for usage in attempts)
+    return {
+        "input_tokens": sum(u["input_tokens"] for u in attempts) if complete else None,
+        "output_tokens": sum(u["output_tokens"] for u in attempts) if complete else None,
+        "total_tokens": sum(u["total_tokens"] for u in attempts) if complete else None,
+        "complete": complete, "attempts": attempts,
+    }
+
+
+def _context_usage_report(settings: ResolvedModelSettings | None,
+                          usage: dict[str, object]) -> dict[str, object]:
+    configured = settings.config.n_ctx if settings is not None else None
+    model_max = settings.model_context_length if settings is not None else None
+    attempts = []
+    for number, attempt in enumerate(usage["attempts"], 1):
+        used = attempt["total_tokens"] if attempt is not None else None
+        attempts.append({
+            "attempt": number, "used_tokens": used,
+            "configured_context_percent": round(100 * used / configured, 2)
+                if used is not None and configured is not None else None,
+            "model_context_percent": round(100 * used / model_max, 2)
+                if used is not None and model_max is not None else None,
+            "remaining_context_tokens": max(0, configured - used)
+                if used is not None and configured is not None else None,
+        })
+    return {"configured_context_tokens": configured,
+            "model_context_tokens": model_max, "attempts": attempts}
+
+
 def review_report(repository: Path | str, settings: ResolvedModelSettings | None = None,
                   result: ReviewResult | None = None,
                   error: BaseException | None = None) -> dict[str, object]:
@@ -43,11 +81,14 @@ def review_report(repository: Path | str, settings: ResolvedModelSettings | None
         status = "no_supported_source"
     if error is not None:
         status = "error"
+    usage = _token_usage_report(result)
     return {
         "schema_version": "1.0", "status": status,
         "repository": str(result.inspection.root if result is not None else repository),
         "languages": list(result.inspection.languages) if result is not None else [],
         "model": _model_report(settings), "coverage": _coverage_report(result),
+        "token_usage": usage,
+        "context_usage": _context_usage_report(settings, usage),
         "recommendations": [asdict(r) for r in result.recommendations] if result is not None and error is None else [],
         "errors": [{"code": type(error).__name__, "message": str(error) or type(error).__name__}] if error is not None else [],
     }

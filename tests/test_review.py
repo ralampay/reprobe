@@ -17,6 +17,7 @@ from reprobe.review.source_context import SourceContext
 
 def recommendation(path="main.py", end=1):
     return {"category": "improvement", "priority": "medium", "title": "Validate input",
+            "synopsis": 'Validate user input before processing to prevent failures caused by blank values.',
             "evidence": [{"path": path, "start_line": 1, "end_line": end, "explanation": "Unchecked input"}],
             "suggested_changes": ["Reject blank values before processing."],
             "validation_steps": ["Test a blank input."]}
