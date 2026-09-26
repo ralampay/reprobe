@@ -8,13 +8,13 @@ import time
 def _stage_message(stage: str) -> str:
     messages = {
         "metadata": "Inspecting local model metadata...",
-        "scan": "Scanning repository source files...",
-        "context": "Selecting source excerpts and fitting the model context...",
+        "scan": "Scanning repository code or instruction files...",
+        "context": "Selecting code and instruction excerpts and fitting the model context...",
         "generate": "Generating recommendations with the local model...",
         "retry": "Output limit reached; retrying once with one concise recommendation...",
         "preflight": "Input token budget checked; output allowance reserved.",
-        "validate": "Validating recommendations and source references...",
-        "empty": "No supported source files found.",
+        "validate": "Validating recommendations and file references...",
+        "empty": "No supported code or instruction files found.",
         "close": "Releasing model resources...",
         "complete": "Review complete.",
         "chat_ready": "Local model ready for chat.",

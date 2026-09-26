@@ -24,7 +24,7 @@ class PrepareReviewContext:
     def execute(self) -> SourceSample:
         sample = self._sampler.sample(self._inspection)
         if not sample.excerpts:
-            raise ReviewError("No readable, nonempty supported source is available for review.")
+            raise ReviewError("No readable, nonempty supported code or instructions are available for review.")
         return self._fit_budget(sample)
 
     def _fit_budget(self, sample: SourceSample) -> SourceSample:
@@ -43,5 +43,5 @@ class PrepareReviewContext:
                 omissions.append(Omission(excerpt.path, "context_limit"))
                 excerpts.pop(index)
             if not excerpts:
-                raise ReviewError("Context is too small for review instructions and source; increase --n-ctx, reduce --max-tokens, or shorten the review query.")
+                raise ReviewError("Context is too small for review instructions and repository content; increase --n-ctx, reduce --max-tokens, or shorten the review query.")
         return SourceSample(tuple(excerpts), tuple(omissions))

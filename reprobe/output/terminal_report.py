@@ -60,10 +60,10 @@ def format_report(report: dict[str, Any], *, width: int = 88, color: bool = Fals
     languages = ", ".join(report["languages"]) or "none detected"
     add(languages, indent="Languages   ")
     coverage = report["coverage"]
-    scope = "sampled / partial" if coverage["partial"] else "all discovered source included"
+    scope = "sampled / partial" if coverage["partial"] else "all discovered files included"
     if report["status"] == "error":
         scope = "attempted review; see error below"
-    add(f"{coverage['reviewed_files']} / {coverage['discovered_files']} source files ({scope})",
+    add(f"{coverage['reviewed_files']} / {coverage['discovered_files']} code or instruction files ({scope})",
         indent="Coverage    ")
     model = report.get("model")
     if model is not None:
@@ -120,16 +120,16 @@ def format_report(report: dict[str, Any], *, width: int = 88, color: bool = Fals
                                   for error in report["errors"]))
         console.print(Panel(message, title=Text("REVIEW FAILED"), border_style="red"))
     elif report["status"] == "no_supported_source":
-        console.print(Panel(Text("No supported source files were found in this directory."),
+        console.print(Panel(Text("No supported code or instruction files were found in this directory."),
                             title=Text("NO SUPPORTED SOURCE"), border_style="cyan"))
     elif not report["recommendations"]:
-        console.print(Panel(Text("The sampled source did not provide enough evidence for a useful recommendation."),
+        console.print(Panel(Text("The sampled content did not provide enough evidence for a useful recommendation."),
                             title=Text("NO ACTIONABLE RECOMMENDATION"), border_style="cyan"))
     else:
         for rank, finding in enumerate(report["recommendations"], 1):
             console.print(_item_card(finding, rank, len(report["recommendations"])))
             console.print()
     if coverage["partial"]:
-        console.print(Text("Based on a bounded source sample. See the JSON export for file ranges and omissions.", style="dim"))
+        console.print(Text("Based on a bounded repository sample. See the JSON export for file ranges and omissions.", style="dim"))
     console.print(Text("Repository files were not modified by the review.", style="dim"))
     return output.getvalue().rstrip("\n")

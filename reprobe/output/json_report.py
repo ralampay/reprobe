@@ -26,7 +26,7 @@ def _coverage_report(result: ReviewResult | None) -> dict[str, object]:
     return {
         "discovered_files": len(result.inspection.candidates),
         "reviewed_files": len(result.excerpts),
-        "supplied_ranges": [{"path": e.path, "start_line": 1, "end_line": e.end_line,
+        "supplied_ranges": [{"path": e.path, "kind": e.kind, "start_line": 1, "end_line": e.end_line,
                             "truncated": e.truncated} for e in result.excerpts],
         "omissions": [asdict(o) for o in result.omissions],
         "partial": bool(result.omissions) or any(e.truncated for e in result.excerpts),

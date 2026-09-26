@@ -1,4 +1,4 @@
-"""Language-balanced, bounded repository source sampling without model logic."""
+"""Bounded sampling across agent instructions and code languages without model logic."""
 from collections import defaultdict, deque
 from collections.abc import Iterator
 
@@ -11,7 +11,12 @@ from reprobe.review.types import (
 def _ordered_candidates(candidates: tuple[SourceCandidate, ...]) -> Iterator[SourceCandidate]:
     groups: dict[str, deque[SourceCandidate]] = defaultdict(deque)
     for candidate in candidates:
-        groups[candidate.language].append(candidate)
+        groups["" if candidate.kind == "instruction" else candidate.language].append(candidate)
+    # The empty language key puts instructions first without inventing a language.
+    if "" in groups:
+        groups[""] = deque(sorted(groups[""], key=lambda c: (
+            not c.explicit, c.path.count("/"), c.path,
+        )))
     while any(groups.values()):
         for language in sorted(groups):
             if groups[language]:
@@ -52,4 +57,4 @@ class SourceSampler:
             return Omission(candidate.path, str(exc))
         if not content.strip():
             return Omission(candidate.path, "empty_or_no_complete_lines")
-        return SourceExcerpt(candidate.path, candidate.language, content, truncated)
+        return SourceExcerpt(candidate.path, candidate.language, content, truncated, candidate.kind)

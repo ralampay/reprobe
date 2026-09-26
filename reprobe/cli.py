@@ -38,19 +38,21 @@ def _positive(value: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="reprobe", description="Review source code with a local GGUF model; show prioritized recommendations.")
+    parser = argparse.ArgumentParser(prog="reprobe", description="Review code and agent instructions with a local GGUF model; show prioritized recommendations.")
     parser.add_argument("repository", type=Path, help="Repository directory to review")
     parser.add_argument("--model", required=True, type=_gguf_model_path, help="Path to a local GGUF chat/instruction model")
     parser.add_argument("--output-json", type=Path, metavar="PATH", help="Also save structured JSON to PATH; use - for JSON-only stdout")
     parser.add_argument("-n", type=_positive, metavar="COUNT", help="Number of top recommendations (default: 1)")
     parser.add_argument("--query", help="Focus the review on this request (quote multiword queries)")
+    parser.add_argument("--instruction-file", type=Path, action="append", default=[], metavar="PATH",
+                        help="Include a custom instruction file relative to the repository (repeatable)")
     parser.add_argument("--chat", action="store_true", help="Start interactive chat instead of a repository review")
     parser.add_argument("--n-ctx", type=_positive, help="Context tokens (auto: model context capped at 8192; fallback 4096)")
     parser.add_argument("--max-tokens", type=_positive, help="Output tokens (auto: min(2048, context // 4))")
     parser.add_argument("--n-gpu-layers", type=int, default=0, help="GPU layers; -1 for all (default: CPU)")
     parser.add_argument("--temperature", type=float, help="Sampling temperature (review: 0.2; chat: 0.7)")
     parser.add_argument("--chat-format", help="Override model chat template")
-    parser.add_argument("--max-files", type=_positive, default=12, help="Maximum sampled source files (default: 12)")
+    parser.add_argument("--max-files", type=_positive, default=12, help="Maximum sampled code and instruction files (default: 12)")
     parser.add_argument("--max-lines-per-file", type=_positive, default=80, help="Maximum lines sampled per file (default: 80)")
     return parser
 
@@ -66,6 +68,8 @@ def _model_options(args: argparse.Namespace) -> dict:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.chat and args.instruction_file:
+        parser.error("--instruction-file is available for repository reviews, not --chat")
     if args.chat and args.n is not None:
         parser.error("-n is available for repository reviews, not --chat")
     if args.query is not None:
@@ -113,6 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     review_command = EvaluateRepository(root, repository, context, model,
                                                 settings.review_input_budget,
                                                 on_progress=progress.update, query=args.query,
+                                                instruction_files=args.instruction_file,
                                                 max_recommendations=args.n if args.n is not None else 1)
                     result = review_command.execute()
                 progress.update("close")

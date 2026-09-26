@@ -3,7 +3,7 @@
 Review a repository using a **local GGUF chat/instruction model**. Reprobe
 recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript and produces a
 focused terminal report with the highest-priority fixes, improvements, or
-features supported by the sampled code (one by default). You can also save the structured JSON.
+features supported by the sampled code and agent instructions (one by default). You can also save the structured JSON.
 It does not modify files, execute repository code, or download models.
 
 ## Install
@@ -65,6 +65,63 @@ retries and included in the input token budget; it does not change file sampling
 or enable code execution. Blank queries and combining `--query` with `--chat`
 are rejected. The model-path flag is `--model`.
 
+### Agent instruction files
+
+Reviews automatically include these case-sensitive names at any depth:
+`AGENTS.md`, `AGENTS.override.md`, `INSTRUCTIONS.md`, `CLAUDE.md`, `GEMINI.md`,
+and `SKILL.md`. Reprobe also recognizes these paths relative to the reviewed root:
+
+- `.cursorrules` and `.windsurfrules`
+- `.cursor/rules/*.mdc` and `.clinerules/*.md`
+- `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`
+
+The `*` patterns match files directly inside those directories, not deeper paths.
+General Markdown files such as README and CONTRIBUTING are not automatically
+included. Repositories containing only recognized instruction files can be reviewed.
+
+Instruction files are both review targets and project context. Reprobe asks the
+model to assess clarity, consistency, and actionable guidance, and to compare
+that guidance with supplied code where evidence supports a finding:
+
+```bash
+reprobe --model /path/to/model.gguf /path/to/repo \
+  --query "Review agent instructions for unclear or conflicting guidance"
+reprobe --model /path/to/model.gguf /path/to/repo \
+  --query "Check whether the supplied code follows the project agent instructions"
+```
+
+Add custom files with repeatable `--instruction-file PATH` options:
+
+```bash
+reprobe --model /path/to/model.gguf /path/to/repo \
+  --instruction-file docs/agent-guide.txt --instruction-file INSTRUCITONS.md
+```
+
+Relative paths resolve against the reviewed repository, not the working directory.
+Absolute paths inside the repository are accepted; duplicate paths are included
+once. `INSTRUCITONS.md` is a custom spelling: only `INSTRUCTIONS.md` is automatic.
+Missing files, directories, symlinks (including parent directories), paths outside
+the repository, and files excluded by ignore/dependency rules produce errors.
+The option is unavailable with `--chat`. Explicit inclusion does not override exclusions.
+
+Within the instruction sampling group, explicitly requested files come first;
+each priority group is ordered by shallowest directory depth and then path.
+Instructions share `--max-files`, `--max-lines-per-file`, the byte cap, and the
+context budget with code. Explicit paths are eligible for sampling, not guaranteed
+to fit. Check omissions and truncated ranges before interpreting findings.
+Coverage counts include both kinds of files; JSON `coverage.supplied_ranges`
+entries have `kind: "code"` or `kind: "instruction"`. The `languages` list contains
+only programming languages and is empty for instruction-only reviews.
+
+Project guidance cannot override Reprobe's review rules, user query, or output
+contract. Interpretation is model-assisted, not an implementation of each agent
+tool's precedence engine. Reprobe does not follow embedded commands, referenced
+files, or links, or read global agent settings outside the repository. Findings
+require citations to supplied lines; unseen or truncated content is not evidence
+of missing behavior or a conflict.
+
+### Review output and limits
+
 Reprobe loads the model once, reviews a bounded sample, shows a readable report,
 and exits. The report includes a priority/category badge for each recommendation,
 a short synopsis, source evidence, suggested changes, validation steps, coverage, and token usage. On a terminal,
@@ -78,7 +135,8 @@ remain visible. Terminal report headings use color only on a TTY; set `NO_COLOR`
 to disable it. Redirected reports are plain text.
 This project uses `llama-cpp-python` directly, not an Ollama service.
 Sampling defaults to at most 12
-readable files, round-robin across detected languages, with the first 80 lines
+readable files, round-robin across an instruction group and detected languages,
+with the instruction group first each round and the first 80 lines
 per file and a 64 KiB read cap. Excerpts shrink further to fit the model context.
 The report identifies supplied ranges, truncation, and omitted files.
 Prompts use compact JSON with numbered source-line pairs to reduce input overhead.
@@ -110,7 +168,7 @@ Excluded files are outside discovery counts and never sent to the model.
 This is a sampled review, not
 an exhaustive audit or compiler analysis. Findings need human review. An empty
 recommendation list is valid when there is insufficient evidence. Discovery counts
-all eligible source files, but the model sees only the reported excerpts. It is
+all eligible code and instruction files, but the model sees only the reported excerpts. It is
 instructed to compare those excerpts as one repository and choose the requested number of top actionable
 priorities, rather than produce an item for every file. The priority label remains
 honest: the strongest finding can be medium or low when no high-risk issue is
@@ -188,7 +246,7 @@ below illustrate one recommendation; actual findings depend on the supplied code
   "coverage": {
     "discovered_files": 1,
     "reviewed_files": 1,
-    "supplied_ranges": [{"path": "main.py", "start_line": 1, "end_line": 5, "truncated": false}],
+    "supplied_ranges": [{"path": "main.py", "kind": "code", "start_line": 1, "end_line": 5, "truncated": false}],
     "omissions": [],
     "partial": false,
     "input_tokens": 900,

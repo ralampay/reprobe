@@ -3,7 +3,9 @@
 ## Implemented behavior and flow
 
 Reprobe performs a bounded, local model-assisted repository review by default.
-It recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript source files.
+It recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript source files,
+plus repository-local agent instruction files. Instruction-only repositories are
+reviewable; instructions are assessed themselves and used as context for code.
 It returns up to the requested number of prioritized recommendations (default one), never modifies source, executes repository code,
 or calls a remote model. Language support is source recognition and model
 reasoning, not compiler-backed analysis. `--chat` enables the existing interactive
@@ -65,7 +67,8 @@ does not initialize models or import external inference dependencies.
 | `models/backend_output.py` | Scoped suppression of Python streams and native stdout/stderr descriptors during backend calls |
 | `output/progress.py` | Scoped terminal spinner with elapsed time, plus plain redirected stderr status messages |
 | `models/llama_cpp.py` | Lazy `llama_cpp` integration, one shared completion routine, token counting, response conversion, resource cleanup; legacy review wrapper |
-| `repositories/local.py` | Root validation, deterministic source discovery, language identification, bounded source reads |
+| `repositories/local.py` | Root and explicit-path validation, deterministic code/instruction discovery, language identification, bounded reads |
+| `repositories/instructions.py` | Pure recognition of supported agent instruction names and root-relative patterns |
 | `repositories/exclusions.py` | Built-in dependency/environment exclusions and scoped ignore matching through lazily imported `pathspec` |
 | `repositories/sampling.py` | Language-balanced bounded reads and omissions, with no prompt or inference dependency |
 | `review/context.py` | `PrepareReviewContext.execute()` coordinates sampling and budget fitting with injected message building and token counting |
@@ -173,6 +176,50 @@ Setuptools discovers all `reprobe*` packages. Both the wheel and editable instal
 retain the `reprobe.cli:main` entrypoint and compatibility modules. No registries,
 factories, base classes, or new dependencies are introduced by the package layout.
 
+## Agent instruction review
+
+`LocalRepository.discover(root, *, instruction_files=())` recognizes the exact,
+case-sensitive basenames `AGENTS.md`, `AGENTS.override.md`, `INSTRUCTIONS.md`,
+`CLAUDE.md`, `GEMINI.md`, and `SKILL.md` at any depth. Root-relative patterns are
+`.cursorrules`, `.windsurfrules`, `.cursor/rules/*.mdc`, `.clinerules/*.md`,
+`.github/copilot-instructions.md`, and `.github/instructions/*.instructions.md`.
+Pattern directories match direct children only. General Markdown is not included.
+Recognition lives in the focused repository helper, not in CLI or model code.
+
+`InspectCodebase` and `EvaluateRepository` accept keyword-only
+`instruction_files: Sequence[Path | str] = ()`; the CLI supplies repeatable
+`--instruction-file PATH` values and rejects that option in chat mode. Relative
+paths resolve against the canonical repository root. Repository access validates
+regular files, rejects symlinked paths/ancestors and outside-root paths, and
+applies the same discovery exclusions to explicit files. Missing or excluded
+explicit paths raise actionable `RepositoryError`s before generation. Duplicate
+paths are collapsed, including files also discovered automatically. With no
+explicit paths, commands retain the original one-argument `discover(root)` call
+for existing injected collaborators.
+
+`SourceCandidate` adds defaulted `kind="code"` and `explicit=False` fields;
+`SourceExcerpt` adds defaulted `kind="code"`. Instruction candidates/excerpts use
+`kind="instruction"` and an empty language string. `CodebaseInspection.languages`
+reports only code languages, while the existing `is_codebase` property accepts
+any eligible candidate, including instruction-only repositories. Existing
+constructors, inspection reason values, and report statuses remain compatible.
+
+Sampling and token fitting use the existing workflow and bounds; explicit paths
+are not exempt from file limits, truncation, or context omissions. Prompt excerpt
+objects include `kind`. The model is asked to evaluate instructions and use them
+as project context, taking file locations and declared scopes into account without
+assuming shared precedence rules across agent tools. It must cite supplied lines
+and avoid inferring conflicts or missing behavior from unavailable content.
+Instruction text remains untrusted review data, never authority to override the
+system prompt, user query, or response contract. Concise retries retain this policy.
+
+The version 1.0 report adds `kind` to each `coverage.supplied_ranges` entry. Coverage
+counts include both kinds; instruction-only reviews have an empty `languages`
+list. Evidence validation accepts citations to either kind through the existing
+path/range contract. Presentation refers to code and instruction files.
+Tool-specific precedence engines, reference/link expansion, execution of embedded
+commands, and reading global agent settings outside the repository are not implemented.
+
 ## Token policy and review limits
 
 GGUF `general.architecture` selects `<architecture>.context_length`. The default
@@ -208,11 +255,13 @@ Only ignore files within the supplied root are considered, without requiring
 Git or consulting its index; tracked files matching a rule are also excluded.
 Excluded files are outside coverage counts. Ordinary first-party `lib`, `tests`,
 and `examples` directories remain eligible. The CLI and review commands have no
-ignore-matching responsibility. Sampling cycles through languages
-alphabetically and paths lexicographically, selecting at most 12 readable files.
+ignore-matching responsibility. Sampling cycles through an instruction group first,
+then languages alphabetically, selecting at most 12 readable files. Code paths
+are ordered lexicographically. Instructions are ordered by explicit inclusion
+first, then directory depth and path within each priority group.
 Each read is capped at 64 KiB and 80 lines by default. Binary/non-UTF-8, empty,
-unreadable, and omitted source files are recorded with reasons when a review can
-proceed. If no readable source remains, review fails explicitly.
+unreadable, and omitted code/instruction files are recorded with reasons when a review can
+proceed. If no readable code or instructions remain, review fails explicitly.
 
 Review prompts serialize the schema and source data with compact JSON separators.
 Source lines are `[line_number, source_text]` pairs, with explicit excerpt ranges;

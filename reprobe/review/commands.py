@@ -20,13 +20,16 @@ class ReviewModel(Protocol):
 
 
 class InspectCodebase:
-    def __init__(self, path: Path, repository: LocalRepository) -> None:
+    def __init__(self, path: Path, repository: LocalRepository, *,
+                 instruction_files: Sequence[Path | str] = ()) -> None:
+        self._instruction_files = tuple(instruction_files)
         self._path = path
         self._repository = repository
 
     def execute(self) -> CodebaseInspection:
         root = self._repository.resolve_root(self._path)
-        candidates = self._repository.discover(root)
+        candidates = (self._repository.discover(root, instruction_files=self._instruction_files)
+                      if self._instruction_files else self._repository.discover(root))
         reason = "recognized_source" if candidates else "no_supported_source"
         return CodebaseInspection(root, candidates, reason)
 
@@ -36,12 +39,14 @@ class EvaluateRepository:
     def __init__(self, path: Path, repository: LocalRepository, context: SourceContext,
                  model: ReviewModel, input_budget: int, *,
                  on_progress: Callable[[str], None] | None = None,
-                 query: str | None = None, max_recommendations: int = 1) -> None:
+                 query: str | None = None, max_recommendations: int = 1,
+                 instruction_files: Sequence[Path | str] = ()) -> None:
         if query is not None and not query.strip():
             raise ReviewError("Review query must not be empty.")
         review_schema(max_recommendations)
         self._max_recommendations = max_recommendations
         self._query = query.strip() if query is not None else None
+        self._instruction_files = tuple(instruction_files)
         self._path = path
         self._repository = repository
         self._context = context
@@ -58,7 +63,8 @@ class EvaluateRepository:
     def execute(self) -> ReviewResult:
         self._result = None
         self._report_progress("scan")
-        inspection = InspectCodebase(self._path, self._repository).execute()
+        inspection = InspectCodebase(self._path, self._repository,
+                                     instruction_files=self._instruction_files).execute()
         self._result = ReviewResult(
             inspection, (), tuple(Omission(c.path, "not_sent_to_model") for c in inspection.candidates), (),
             input_budget=self._input_budget,

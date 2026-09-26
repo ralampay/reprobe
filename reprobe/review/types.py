@@ -17,6 +17,8 @@ class TruncatedReviewError(ReviewError):
 class SourceCandidate:
     path: str
     language: str
+    kind: str = "code"
+    explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,7 @@ class CodebaseInspection:
 
     @property
     def languages(self) -> tuple[str, ...]:
-        return tuple(sorted({item.language for item in self.candidates}))
+        return tuple(sorted({item.language for item in self.candidates if item.kind == "code"}))
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class SourceExcerpt:
     language: str
     content: str
     truncated: bool
+    kind: str = "code"
 
     @property
     def end_line(self) -> int:

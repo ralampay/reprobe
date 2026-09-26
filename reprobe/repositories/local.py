@@ -1,5 +1,8 @@
 import os
 from pathlib import Path
+from collections.abc import Sequence
+
+from reprobe.repositories.instructions import is_instruction_file
 
 from reprobe.review.types import SourceCandidate
 from reprobe.repositories.exclusions import (
@@ -48,12 +51,37 @@ class LocalRepository:
                 raise
             raise RepositoryError(f"Repository cannot be accessed: {path}: {exc}") from exc
 
-    def discover(self, root: Path) -> tuple[SourceCandidate, ...]:
+    def _instruction_paths(self, root: Path, paths: Sequence[Path | str]) -> set[str]:
+        selected = set()
+        for value in paths:
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = root / path
+            try:
+                # Check lexical ancestors before resolving, including symlinked directories.
+                if any(part.is_symlink() for part in (path, *path.parents)):
+                    raise RepositoryError(f"Instruction file must not use symlinks: {value}")
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(root):
+                    raise RepositoryError(f"Instruction file must be inside repository: {value}")
+                if not resolved.is_file():
+                    raise RepositoryError(f"Instruction file must be a regular file: {value}")
+                selected.add(resolved.relative_to(root).as_posix())
+            except (OSError, RuntimeError) as exc:
+                if isinstance(exc, RepositoryError):
+                    raise
+                raise RepositoryError(f"Cannot access instruction file {value}: {exc}") from exc
+        return selected
+
+    def discover(self, root: Path, *, instruction_files: Sequence[Path | str] = ()) -> tuple[SourceCandidate, ...]:
+        selected = self._instruction_paths(root, instruction_files)
         candidates = []
 
         try:
             # An explicitly supplied environment is still not application source.
             if (root / "pyvenv.cfg").is_file() or (root / "conda-meta").is_dir():
+                if selected:
+                    raise RepositoryError("Instruction files are excluded inside a dependency environment.")
                 return ()
             custom_rules = read_ignore_rules(root, ".reprobeignore")
             scopes = {root: ()}
@@ -78,15 +106,24 @@ class LocalRepository:
                     if (path.is_symlink() or not path.is_file()
                             or is_ignored(path, effective_rules, directory=False)):
                         continue
-                    language = detect_language(path)
+                    relative = path.relative_to(root).as_posix()
+                    instruction = relative in selected or is_instruction_file(relative)
+                    language = "" if instruction else detect_language(path)
 
                     if language is not None:
                         candidates.append(SourceCandidate(
-                            path.relative_to(root).as_posix(), language
+                            relative, language, "instruction" if instruction else "code",
+                            relative in selected
                         ))
 
         except OSError as exc:
             raise RepositoryError(f"Cannot inspect repository {root}: {exc}") from exc
+        missing = selected - {candidate.path for candidate in candidates}
+        if missing:
+            raise RepositoryError(
+                "Instruction files are excluded or unavailable: " + ", ".join(sorted(missing))
+                + ". Check .gitignore, .reprobeignore, and dependency exclusions."
+            )
         return tuple(sorted(candidates, key=lambda candidate: candidate.path))
 
     def read_excerpt(self, root: Path, candidate: SourceCandidate, max_lines: int) -> tuple[str, bool]:
