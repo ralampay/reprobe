@@ -2,6 +2,9 @@ import os
 from pathlib import Path
 
 from reprobe.review.types import SourceCandidate
+from reprobe.repositories.exclusions import (
+    EXCLUDED_DIRECTORIES, is_dependency_directory, is_ignored, read_ignore_rules,
+)
 
 LANGUAGE_SUFFIXES = {
     "python": frozenset({".py", ".pyw"}),
@@ -13,10 +16,6 @@ LANGUAGE_SUFFIXES = {
 }
 
 RUBY_FILENAMES = frozenset({"Rakefile", "Gemfile", "config.ru"})
-
-EXCLUDED_DIRECTORIES = frozenset({
-    "node_modules", ".cache", ".pytest_cache", ".mypy_cache", ".next", ".git", ".venv", "venv", "__pycache__", "build", "dist", "vendor", ".bundle",
-})
 
 class RepositoryError(RuntimeError):
     """Repository access failed; not a negative codebase classification."""
@@ -53,19 +52,31 @@ class LocalRepository:
         candidates = []
 
         try:
+            # An explicitly supplied environment is still not application source.
+            if (root / "pyvenv.cfg").is_file() or (root / "conda-meta").is_dir():
+                return ()
+            custom_rules = read_ignore_rules(root, ".reprobeignore")
+            scopes = {root: ()}
             for directory, dirs, files in os.walk(
                 root, topdown=True, followlinks=False, onerror=raise_walk_error
             ):
                 parent = Path(directory)
+                inherited = scopes.pop(parent)
+                rules = inherited + read_ignore_rules(parent, ".gitignore")
+                effective_rules = rules + custom_rules
                 dirs[:] = sorted(
                     name for name in dirs
-                    if not name in EXCLUDED_DIRECTORIES
-                    and not (parent / name).is_symlink()
+                    if not (parent / name).is_symlink()
+                    and not is_dependency_directory(parent / name)
+                    and not is_ignored(parent / name, effective_rules, directory=True)
                 )
-                
+                for name in dirs:
+                    scopes[parent / name] = rules
+
                 for name in files:
                     path = parent / name
-                    if path.is_symlink() or not path.is_file():
+                    if (path.is_symlink() or not path.is_file()
+                            or is_ignored(path, effective_rules, directory=False)):
                         continue
                     language = detect_language(path)
 

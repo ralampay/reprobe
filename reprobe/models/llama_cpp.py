@@ -5,6 +5,7 @@ from typing import Any
 
 from reprobe.chat.types import ChatMessage, ChatReply
 from reprobe.models.types import ModelConfig
+from reprobe.models.backend_output import suppress_backend_output
 
 
 class ModelError(RuntimeError):
@@ -29,20 +30,22 @@ class LlamaCppModel:
         if not is_file or path.suffix.lower() != ".gguf":
             raise ModelError(f"Model must be an existing GGUF file: {path}")
         try:
-            from llama_cpp import Llama
+            with suppress_backend_output():
+                from llama_cpp import Llama
         except (ImportError, OSError) as exc:
             raise ModelError(
                 "Cannot import llama-cpp-python; install a working build with "
                 "`python -m pip install llama-cpp-python`."
             ) from exc
         try:
-            self._model = Llama(
-                model_path=str(path),
-                n_ctx=self.config.n_ctx,
-                n_gpu_layers=self.config.n_gpu_layers,
-                chat_format=self.config.chat_format,
-                verbose=False,
-            )
+            with suppress_backend_output():
+                self._model = Llama(
+                    model_path=str(path),
+                    n_ctx=self.config.n_ctx,
+                    n_gpu_layers=self.config.n_gpu_layers,
+                    chat_format=self.config.chat_format,
+                    verbose=False,
+                )
         except Exception as exc:
             raise ModelError(
                 f"Cannot load GGUF model {path}: {exc}. Check model compatibility "
@@ -57,7 +60,8 @@ class LlamaCppModel:
         if self._model is None:
             raise ModelError("Model is not loaded; call load() before token counting.")
         try:
-            return sum(len(self._model.tokenize(m.content.encode("utf-8"), add_bos=False)) for m in messages)
+            with suppress_backend_output():
+                return sum(len(self._model.tokenize(m.content.encode("utf-8"), add_bos=False)) for m in messages)
         except Exception as exc:
             raise ModelError(f"Cannot tokenize review input: {exc}") from exc
 
@@ -81,13 +85,14 @@ class LlamaCppModel:
             options = {} if schema is None else {
                 "response_format": {"type": "json_object", "schema": schema},
             }
-            response = self._model.create_chat_completion(
-                messages=[{"role": m.role, "content": m.content} for m in messages],
-                max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
-                stream=False,
-                **options,
-            )
+            with suppress_backend_output():
+                response = self._model.create_chat_completion(
+                    messages=[{"role": m.role, "content": m.content} for m in messages],
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                    stream=False,
+                    **options,
+                )
             return self._parse_reply(response)
         except Exception as exc:
             if operation == "Chat":
@@ -127,7 +132,8 @@ class LlamaCppModel:
         model = self._model
         if model is not None:
             try:
-                model.close()
+                with suppress_backend_output():
+                    model.close()
             except Exception as exc:
                 raise ModelError(f"Cannot release model resources: {exc}") from exc
             self._model = None

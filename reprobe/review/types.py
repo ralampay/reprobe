@@ -7,6 +7,10 @@ class ReviewError(RuntimeError):
     """Review cannot produce a trustworthy structured result."""
 
 
+class TruncatedReviewError(ReviewError):
+    """Output ended before a complete JSON document was produced."""
+
+
 @dataclass(frozen=True)
 class SourceCandidate:
     path: str
@@ -71,6 +75,9 @@ class ReviewResult:
     excerpts: tuple[SourceExcerpt, ...]
     omissions: tuple[Omission, ...]
     recommendations: tuple[Recommendation, ...]
+    input_tokens: int | None = None
+    input_budget: int | None = None
+    generation_attempts: int = 0
 
 
 @dataclass(frozen=True)

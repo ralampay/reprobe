@@ -4,7 +4,7 @@
 
 Reprobe performs a bounded, local model-assisted repository review by default.
 It recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript source files.
-It returns recommendations, never modifies source, executes repository code,
+It returns one prioritized recommendation, never modifies source, executes repository code,
 or calls a remote model. Language support is source recognition and model
 reasoning, not compiler-backed analysis. `--chat` enables the existing interactive
 chat use case instead.
@@ -24,7 +24,10 @@ CLI / Python caller
        -> review_messages() -> ReviewModel.generate_review()
        -> parse_recommendations() -> immutable ReviewResult
   -> LlamaCppModel.close()
-  -> review_report() -> JSON stdout
+  -> review_report() -> structured envelope
+       -> format_report() -> readable stdout (default)
+       -> WriteJsonReport.execute() -> optional JSON file
+       -> serialize_report() -> JSON stdout with --output-json -
 ```
 
 The CLI owns resource lifetime and emits the report after model cleanup. Cleanup
@@ -41,7 +44,7 @@ reprobe/
   repositories/               # Local repository access and source sampling
   review/                     # Types, commands, context, prompts, response contract
   chat/                       # Types, commands, terminal interaction
-  output/                     # JSON report serialization
+  output/                     # Structured data, terminal reports, JSON export, progress
 ```
 
 Implementations live in these component packages. Root-level modules such as
@@ -59,8 +62,11 @@ does not initialize models or import external inference dependencies.
 | `models/settings.py` | `ResolveModelSettings(model_path, reader, **overrides).execute()` returns immutable resolved settings, selection reasons, and the review input budget |
 | `models/types.py` | Backend-independent `ModelConfig`, `ModelMetadata`, and shared validation of explicit or resolved settings |
 | `chat/types.py` | Chat messages, replies, and turns; compatibility export of `ModelConfig` |
+| `models/backend_output.py` | Scoped suppression of Python streams and native stdout/stderr descriptors during backend calls |
+| `output/progress.py` | Scoped terminal spinner with elapsed time, plus plain redirected stderr status messages |
 | `models/llama_cpp.py` | Lazy `llama_cpp` integration, one shared completion routine, token counting, response conversion, resource cleanup; legacy review wrapper |
 | `repositories/local.py` | Root validation, deterministic source discovery, language identification, bounded source reads |
+| `repositories/exclusions.py` | Built-in dependency/environment exclusions and scoped ignore matching through lazily imported `pathspec` |
 | `repositories/sampling.py` | Language-balanced bounded reads and omissions, with no prompt or inference dependency |
 | `review/context.py` | `PrepareReviewContext.execute()` coordinates sampling and budget fitting with injected message building and token counting |
 | `review/source_context.py` | Compatibility facade supplying the standard sampler and review prompt builder |
@@ -68,7 +74,9 @@ does not initialize models or import external inference dependencies.
 | `review/contract.py` | Single response schema, structural validation, evidence checks, and recommendation parsing |
 | `review/commands.py` | `InspectCodebase.execute()` and `EvaluateRepository.execute()` coordinate workflows without printing |
 | `review/types.py` | Immutable source, sample, inspection, evidence, recommendation, and result values; `ReviewError` |
-| `output/json_report.py` | Versioned report serialization; application-owned metadata and error envelope |
+| `output/json_report.py` | Versioned structured envelope; application-owned metadata and errors |
+| `output/terminal_report.py` | Pure rendering of the structured envelope into a wrapped, optionally colored terminal report |
+| `output/files.py` | JSON serialization and `WriteJsonReport.execute()` for atomic file export |
 | `chat/commands.py`, `chat/terminal.py` | Existing chat command and terminal/session presentation respectively |
 
 Commands accept collaborators through constructors. `ReviewModel` requires only
@@ -82,6 +90,34 @@ with lightweight fakes through their existing methods, without inheritance.
 context-manager support. Failed cleanup retains the backend handle for retry.
 Combined operation/cleanup failures preserve the original cause and report both.
 Commands never own model lifetime or print CLI output.
+
+`EvaluateRepository` accepts an optional keyword-only `on_progress(stage)` callback.
+It emits scan/context/preflight/generate/validate stages, plus retry and empty-source
+stages, and is silent by default. The CLI injects `ProgressReporter.update`, owns
+metadata/loading/cleanup/completion messages, and stops the reporter before errors.
+The chat presenter scopes a reporter around each generation, leaving prompts and
+replies untouched. No fictitious tool calls are displayed: stages correspond to
+actual routines in this review pipeline.
+
+`ProgressReporter` animates one stderr line with elapsed seconds on a terminal,
+using a worker thread and a stop event. Stage changes join the old worker before
+starting the next, and context exit restores a clean line and closes resources
+on success, failure, or interruption. The reporter duplicates the original terminal
+stderr descriptor before backend suppression starts, allowing frames to remain
+visible while native stdout/stderr are redirected. Redirected/non-terminal output
+uses one plain line per stage and starts no worker. No terminal cursor is hidden.
+All progress stays off stdout, and completion follows successful model cleanup.
+
+The inference adapter retains `verbose=False` and suppresses both Python streams
+and native file descriptors around backend import, loading, tokenization,
+generation, and cleanup. Each suppression scope restores descriptors and streams
+on normal return, exceptions, and interrupts. It never spans result rendering;
+the spinner uses its independent terminal descriptor. Exceptions retain their
+causes and are rendered afterward.
+Descriptor redirection is process-wide and intended for this CLI's synchronous
+backend calls; unrelated threads writing to the same streams during those calls
+would also be silenced. No persistent logging callback or global log level is
+changed. The project has no Ollama integration.
 
 ### Dependency direction and compatibility
 
@@ -150,8 +186,21 @@ These defaults are conservative policy, not hardware benchmarking. GPU layers
 remain explicit, defaulting to CPU. Review temperature defaults to 0.2 and chat
 temperature to 0.7. The report records resolved settings and their origins.
 
-Discovery skips symlink entries, dependency/build directories and common caches.
-It does not implement `.gitignore` matching. Sampling cycles through languages
+Discovery prunes symlinks, dependency/build directories, and caches before
+sampling. Built-in directory names are case-insensitive; virtual environments
+with arbitrary names are recognized by `pyvenv.cfg` or `conda-meta` markers.
+`repositories/exclusions.py` owns this policy and isolates the `pathspec`
+Git-ignore matcher. `LocalRepository` carries ancestor `.gitignore` scopes down
+the walk; deeper rules override ancestors, then root `.reprobeignore` rules take
+precedence. Excluded directories are never descended into, so a negation cannot
+restore a file beneath a pruned parent. Built-in exclusions cannot be negated.
+Linked ignore files are skipped; unreadable/invalid ignore files produce a
+`RepositoryError` with cause instead of silently broadening discovery.
+Only ignore files within the supplied root are considered, without requiring
+Git or consulting its index; tracked files matching a rule are also excluded.
+Excluded files are outside coverage counts. Ordinary first-party `lib`, `tests`,
+and `examples` directories remain eligible. The CLI and review commands have no
+ignore-matching responsibility. Sampling cycles through languages
 alphabetically and paths lexicographically, selecting at most 12 readable files.
 Each read is capped at 64 KiB and 80 lines by default. Binary/non-UTF-8, empty,
 unreadable, and omitted source files are recorded with reasons when a review can
@@ -165,10 +214,32 @@ reservation is an estimate: custom templates can still exceed it, in which case
 the adapter returns an actionable context error. At least one source line must
 fit. Source text is treated as untrusted data in the prompt.
 
-Structured generation requests at most three recommendations using a JSON schema.
-Application validation independently enforces fields, enums, types, nonempty
-steps, and evidence within supplied line ranges. Truncated output is rejected.
-An empty recommendation list is valid. Evidence validation verifies locations,
+The prompt asks the model to compare the entire supplied sample and choose one
+highest-priority actionable issue, weighing impact and evidence. It prioritizes
+correctness, security, reliability, and data-loss risks over style or speculative
+features, and asks the evidence explanation to justify the issue's impact. It
+must not inflate priority or emit one finding per file. The generation schema
+and application validator both enforce at most one recommendation.
+The contract bounds titles to 120 characters, explanations/steps to 240 characters,
+evidence lists to two entries, and change/test lists to three entries. Application
+validation independently enforces these bounds, fields, enums, types, nonempty
+steps, and evidence within supplied line ranges. An empty recommendation list is valid.
+
+After context fitting, `EvaluateRepository` checks the final prompt token count
+against the available input budget before each inference attempt. On incomplete
+JSON with a `length` finish reason, it retries once with a compact prompt asking
+for one finding. Retry instruction overhead is reserved before re-fitting source;
+the model instance and configured output/context limits are unchanged. Complete,
+validated JSON is accepted with either `stop` or `length`. Other invalid output
+is not retried, and partial JSON is never salvaged as a successful report.
+
+The command exposes a read-only `result` property with immutable snapshots after
+inspection, context preparation, and generation attempts. The CLI reads the last
+snapshot if execution fails, preserving discovered languages, supplied ranges,
+omissions, input-token count/budget, and attempt count in the error envelope.
+Pre-context failures record discovered sources as not sent to the model. These
+coverage fields are additive within the version 1.0 envelope. A retry that also
+truncates raises an actionable error that distinguishes input and output limits. Evidence validation verifies locations,
 not semantic correctness of model claims; users still review proposed changes.
 
 ## Output, errors, and extensibility
@@ -176,8 +247,24 @@ not semantic correctness of model claims; users still review proposed changes.
 The version 1.0 envelope always has `schema_version`, `status`, `repository`,
 `languages`, `model`, `coverage`, `recommendations`, and `errors`. Runtime failures
 use the same envelope with empty recommendations. Before settings/review are
-available, model is null and coverage is empty. Help/argument errors and explicit
-chat output retain conventional text. Diagnostics go to stderr. Status codes are
+available, model is null and coverage is empty; after inspection, partial coverage
+is retained on failure. The default stdout display is a readable report rendered
+from that same envelope. It shows priority/category, title, cited evidence,
+change steps, validation, coverage, and explicit empty/error states. The CLI
+chooses terminal width and enables color only on a TTY unless `NO_COLOR` is set
+or `TERM=dumb`. The renderer strips control characters from model/path text and
+wraps long content. Help/argument errors and explicit chat retain conventional text.
+
+`--output-json PATH` keeps the readable display and additionally saves the full
+envelope, including runtime failures. `WriteJsonReport` serializes first, writes
+a temporary UTF-8 file beside the destination, and atomically replaces the target.
+It does not create missing parent directories. A failure preserves any old report,
+cleans up the temporary file, and raises `ReportWriteError` with its cause; the CLI
+renders the error and exits 1. Existing report files may be replaced, but the CLI
+rejects the model file as an export destination. No file is written by default.
+`--output-json -` selects JSON-only stdout for automation. The flag is invalid
+with `--chat`. The envelope and Python review interfaces remain structured in
+both modes. Diagnostics go to stderr. Status codes are
 0 (completed or no supported source), 1 (runtime failure), 2 (invalid arguments),
 and 130 (interrupt with successful cleanup).
 
@@ -206,3 +293,9 @@ preparation with injected builders/counters, arbitrary-schema generation, and
 legacy import identities. Deterministic CLI comparisons preserve report contents,
 diagnostics, and exit statuses for success, generation failure, cleanup failure,
 and interruption.
+
+Spinner tests use both in-memory terminals and a real PTY, including animation
+while native descriptors are suppressed. Recovery tests cover concise retries,
+complete JSON at the token limit, retry exhaustion, context-fit failures, explicit
+limit preservation, and retained error coverage. A real Qwen3.5-0.8B GGUF review
+was also validated with the default 8192/2048 context/output configuration.

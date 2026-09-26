@@ -45,7 +45,7 @@ def test_no_recognized_source_is_a_result_not_an_error(tmp_path):
     assert result.reason == "no_supported_source"
 
 def test_excluded_directories_and_sorted_results(tmp_path):
-    for name in (".git", ".venv", "venv", "__pycache__", "build", "dist", "vendor", ".bundle"):
+    for name in (".git", ".venv", "venv", "env", "__pycache__", "build", "dist", "vendor", ".bundle"):
         directory = tmp_path / "nested" / name
         directory.mkdir(parents=True)
         (directory / "hidden.py").write_text("pass", encoding="utf-8")

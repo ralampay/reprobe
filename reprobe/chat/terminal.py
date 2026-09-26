@@ -1,6 +1,7 @@
 """Line-oriented terminal chat presentation."""
 
 from reprobe.chat.commands import ChatModel, GenerateChatReply
+from reprobe.output.progress import ProgressReporter
 
 
 def chat(model: ChatModel) -> None:
@@ -21,7 +22,9 @@ def chat(model: ChatModel) -> None:
             continue
         if not action:
             continue
-        turn = GenerateChatReply(model, history, user_input).execute()
+        with ProgressReporter() as progress:
+            progress.update("chat_generate")
+            turn = GenerateChatReply(model, history, user_input).execute()
         history = turn.history
         print(f"Assistant: {turn.reply.content}")
         if turn.reply.finish_reason == "length":

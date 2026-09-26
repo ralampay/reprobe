@@ -1,6 +1,7 @@
 """Argument parsing, dependency composition, and user-facing errors."""
 import argparse
-import json
+import os
+import shutil
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -10,6 +11,9 @@ from reprobe.models.gguf_metadata import GgufMetadataReader, MetadataError
 from reprobe.models.llama_cpp import LlamaCppModel, ModelError
 from reprobe.models.settings import ResolveModelSettings
 from reprobe.output.json_report import review_report
+from reprobe.output.files import ReportWriteError, WriteJsonReport, serialize_report
+from reprobe.output.terminal_report import format_report
+from reprobe.output.progress import ProgressReporter
 from reprobe.repositories.local import LocalRepository, RepositoryError
 from reprobe.review.commands import EvaluateRepository
 from reprobe.review.types import ReviewError
@@ -34,9 +38,10 @@ def _positive(value: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="reprobe", description="Review source code with a local GGUF model; emit a structured JSON report.")
+    parser = argparse.ArgumentParser(prog="reprobe", description="Review source code with a local GGUF model; show one prioritized recommendation.")
     parser.add_argument("repository", type=Path, help="Repository directory to review")
     parser.add_argument("--model", required=True, type=_gguf_model_path, help="Path to a local GGUF chat/instruction model")
+    parser.add_argument("--output-json", type=Path, metavar="PATH", help="Also save structured JSON to PATH; use - for JSON-only stdout")
     parser.add_argument("--chat", action="store_true", help="Start interactive chat instead of a repository review")
     parser.add_argument("--n-ctx", type=_positive, help="Context tokens (auto: model context capped at 8192; fallback 4096)")
     parser.add_argument("--max-tokens", type=_positive, help="Output tokens (auto: min(2048, context // 4))")
@@ -59,6 +64,11 @@ def _model_options(args: argparse.Namespace) -> dict:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.chat and args.output_json is not None:
+        parser.error("--output-json is available for repository reviews, not --chat")
+    if args.output_json is not None and args.output_json != Path("-"):
+        if args.output_json.expanduser().resolve() == args.model.resolve():
+            parser.error("--output-json must not overwrite the model file")
     options = _model_options(args)
     # Validate explicit scalar options before reading metadata or loading a model.
     try:
@@ -66,27 +76,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     settings = result = error = None
+    review_command = None
     status = 0
     repository = LocalRepository()
     root = args.repository
     try:
-        if not args.chat:
-            root = repository.resolve_root(root)
-        try:
-            settings = ResolveModelSettings(args.model, GgufMetadataReader(), n_ctx=args.n_ctx,
-                                            max_tokens=args.max_tokens, **options).execute()
-        except ValueError as exc:
-            parser.error(str(exc))
-        for diagnostic in settings.diagnostics:
-            print(f"reprobe: {diagnostic}", file=sys.stderr)
-        print(f"Loading model: {args.model} (context={settings.config.n_ctx}, output={settings.config.max_tokens})", file=sys.stderr)
-        with LlamaCppModel(settings.config) as model:
-            if args.chat:
-                chat(model)
-            else:
-                context = SourceContext(repository, args.max_files, args.max_lines_per_file)
-                result = EvaluateRepository(root, repository, context, model,
-                                            settings.review_input_budget).execute()
+        with ProgressReporter() as progress:
+            if not args.chat:
+                root = repository.resolve_root(root)
+            progress.update("metadata")
+            try:
+                settings = ResolveModelSettings(args.model, GgufMetadataReader(), n_ctx=args.n_ctx,
+                                                max_tokens=args.max_tokens, **options).execute()
+            except ValueError as exc:
+                parser.error(str(exc))
+            progress.stop()
+            for diagnostic in settings.diagnostics:
+                print(f"reprobe: {diagnostic}", file=sys.stderr)
+            progress.message(f"Loading local model: {args.model} (context={settings.config.n_ctx}, output={settings.config.max_tokens})")
+            with LlamaCppModel(settings.config) as model:
+                if args.chat:
+                    progress.update("chat_ready")
+                    chat(model)
+                else:
+                    context = SourceContext(repository, args.max_files, args.max_lines_per_file)
+                    review_command = EvaluateRepository(root, repository, context, model,
+                                                settings.review_input_budget,
+                                                on_progress=progress.update)
+                    result = review_command.execute()
+                progress.update("close")
+            if not args.chat:
+                progress.update("complete")
     except (MetadataError, ModelError, RepositoryError, ReviewError) as exc:
         error, status = exc, 1
         print(f"reprobe: {exc}", file=sys.stderr)
@@ -94,5 +114,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         error, status = exc, 130
         print("reprobe: interrupted", file=sys.stderr)
     if not args.chat:
-        print(json.dumps(review_report(root, settings, result, error), indent=2, ensure_ascii=False))
+        if result is None and review_command is not None:
+            result = review_command.result
+        report = review_report(root, settings, result, error)
+        if args.output_json == Path("-"):
+            print(serialize_report(report), end="")
+        else:
+            color = sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+            print(format_report(report, width=shutil.get_terminal_size((88, 24)).columns, color=color))
+            if args.output_json is not None:
+                try:
+                    saved = WriteJsonReport(args.output_json, report).execute()
+                except ReportWriteError as exc:
+                    print(f"reprobe: {exc}", file=sys.stderr)
+                    return 1
+                print(f"reprobe: JSON report saved to {saved}", file=sys.stderr)
     return status

@@ -21,7 +21,8 @@ def _model_report(settings: ResolvedModelSettings | None) -> dict[str, object] |
 def _coverage_report(result: ReviewResult | None) -> dict[str, object]:
     if result is None:
         return {"discovered_files": 0, "reviewed_files": 0, "supplied_ranges": [],
-                "omissions": [], "partial": False}
+                "omissions": [], "partial": False, "input_tokens": None,
+                "input_budget": None, "generation_attempts": 0}
     return {
         "discovered_files": len(result.inspection.candidates),
         "reviewed_files": len(result.excerpts),
@@ -29,6 +30,8 @@ def _coverage_report(result: ReviewResult | None) -> dict[str, object]:
                             "truncated": e.truncated} for e in result.excerpts],
         "omissions": [asdict(o) for o in result.omissions],
         "partial": bool(result.omissions) or any(e.truncated for e in result.excerpts),
+        "input_tokens": result.input_tokens, "input_budget": result.input_budget,
+        "generation_attempts": result.generation_attempts,
     }
 
 

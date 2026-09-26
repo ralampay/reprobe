@@ -2,7 +2,8 @@
 
 Review a repository using a **local GGUF chat/instruction model**. Reprobe
 recognizes C++, Ruby, Python, Go, JavaScript, and TypeScript and produces a
-consistent JSON report containing suggested fixes, improvements, or features.
+focused terminal report with the single highest-priority fix, improvement, or
+feature supported by the sampled code. You can also save the structured JSON.
 It does not modify files, execute repository code, or download models.
 
 ## Install
@@ -26,20 +27,67 @@ Supply a compatible local chat/instruction GGUF, not an embedding model:
 
 ```bash
 reprobe --model /path/to/model.gguf /path/to/repo
-# Equivalent module invocation; save the JSON report:
-python -m reprobe --model /path/to/model.gguf /path/to/repo > review.json
+# Show the report and also save its structured data:
+python -m reprobe --model /path/to/model.gguf /path/to/repo --output-json review.json
+# JSON-only stdout for pipelines:
+reprobe --model /path/to/model.gguf /path/to/repo --output-json - > review.json
 ```
 
-Reprobe loads the model once, reviews a bounded sample, prints one JSON object,
-and exits. Progress/diagnostics go to stderr. Sampling defaults to at most 12
+Reprobe loads the model once, reviews a bounded sample, shows a readable report,
+and exits. The report includes a priority/category badge, one recommendation,
+source evidence, suggested changes, validation steps, and coverage. On a terminal,
+an animated spinner and elapsed seconds show the active
+routine: model inspection/loading, source scanning, context fitting, input-budget
+checking, generation, validation, retries, and cleanup. Chat replies also have a
+spinner while generating. It stops before user input, replies, or error messages.
+Redirected stderr gets plain stage lines without animation or escape sequences.
+Progress stays on stderr. Backend debug output is suppressed; actionable errors
+remain visible. Terminal report headings use color only on a TTY; set `NO_COLOR`
+to disable it. Redirected reports are plain text.
+This project uses `llama-cpp-python` directly, not an Ollama service.
+Sampling defaults to at most 12
 readable files, round-robin across detected languages, with the first 80 lines
 per file and a 64 KiB read cap. Excerpts shrink further to fit the model context.
 The report identifies supplied ranges, truncation, and omitted files.
 
-Dependency/build directories, common caches and symlinks are excluded;
-`.gitignore` rules are not currently interpreted. This is a sampled review, not
+Discovery excludes dependencies, build output, caches, and symlinks before
+sampling. This includes `env`/`ENV`, `.venv`, `node_modules`, `vendor`,
+`third_party`, `site-packages`, `.tox`, and `.nox`. Renamed Python/Conda environments
+are detected by `pyvenv.cfg` or `conda-meta` markers.
+
+Root and nested `.gitignore` files are respected, even without Git installed.
+For additional exclusions, create `.reprobeignore` in the reviewed root using
+Git ignore syntax, for example:
+
+```gitignore
+custom-dependencies/
+generated-client/
+*.generated.ts
+```
+
+Root `.reprobeignore` rules take precedence over `.gitignore`; negations can
+restore files only inside directories that are still traversed. Built-in
+exclusions and symlink protection cannot be overridden. Rules apply to tracked
+and untracked files alike; parent/global Git ignores are not consulted. First-party
+`src`, `lib`, `tests`, and `examples` remain eligible unless explicitly ignored.
+Excluded files are outside discovery counts and never sent to the model.
+
+This is a sampled review, not
 an exhaustive audit or compiler analysis. Findings need human review. An empty
-recommendation list is valid when there is insufficient evidence.
+recommendation list is valid when there is insufficient evidence. Discovery counts
+all eligible source files, but the model sees only the reported excerpts. It is
+instructed to compare those excerpts as one repository and choose one actionable
+priority, rather than produce an item for every file. The priority label remains
+honest: the strongest finding can be medium or low when no high-risk issue is
+supported by evidence.
+
+`--output-json PATH` writes the full versioned envelope, including coverage,
+model settings, recommendation, and any runtime errors, while retaining the
+readable terminal display. Nothing is saved unless requested. The parent directory
+must exist; an existing destination is replaced atomically after serialization.
+A save failure is reported on stderr and returns exit code 1 while keeping the
+terminal report. The model file cannot be used as the export destination.
+`--output-json -` emits only JSON on stdout. Neither form is available with `--chat`.
 
 ## Automatic token settings
 
@@ -78,10 +126,12 @@ overhead; increase context or reduce sampling if generation reports a limit.
 | `--temperature` | 0.2 review / 0.7 chat | Nonnegative sampling temperature |
 | `--chat-format` | Model/backend default | Override chat template |
 | `--chat` | Off | Interactive chat instead of review |
+| `--output-json PATH` | Not saved | Export JSON; use `-` for JSON-only stdout |
 
 ## JSON contract
 
-The envelope has the same keys on success and runtime failure. Example fields
+The exported envelope has the same keys on success and runtime failure.
+`recommendations` contains zero or one item. Example fields
 below illustrate one recommendation; actual findings depend on the supplied code:
 
 ```json
@@ -105,7 +155,10 @@ below illustrate one recommendation; actual findings depend on the supplied code
     "reviewed_files": 1,
     "supplied_ranges": [{"path": "main.py", "start_line": 1, "end_line": 5, "truncated": false}],
     "omissions": [],
-    "partial": false
+    "partial": false,
+    "input_tokens": 900,
+    "input_budget": 2560,
+    "generation_attempts": 1
   },
   "recommendations": [{
     "id": "R001",
@@ -124,8 +177,25 @@ Statuses are `completed`, `no_supported_source`, and `error`. Categories are
 `fix`, `improvement`, and `feature`; priorities are `high`, `medium`, and `low`.
 Runtime errors populate `errors` with `code` and `message`, leave recommendations
 empty, and preserve available metadata. Model is null until settings resolve;
-coverage is empty until a review result exists. Truncated/invalid JSON or evidence
-outside the supplied source is rejected, not printed as a successful review.
+coverage is populated as soon as inspection succeeds and retained on later
+failures. Coverage includes input tokens, the available input budget, and the
+number of generation attempts. The input budget reserves output tokens and
+512 tokens for chat-template overhead; custom template overhead remains an estimate.
+
+Before inference, source excerpts are fitted to the input budget and the final
+prompt is checked again. A fitted prompt cannot guarantee the answer will fit
+its separate output limit. To reduce overruns, review fields and list lengths
+are bounded. If generation ends with incomplete JSON at the output limit,
+Reprobe retries once, using the same limits, asking for at most one concise
+recommendation and re-fitting source context for that prompt. It does not reload
+the model or silently increase explicit token limits.
+
+A complete, validated JSON response is usable even if generation hit the token
+limit afterward. Partial JSON is never repaired or reported as success. If the
+retry also truncates, the error explains how to increase `--max-tokens` (and
+`--n-ctx` if needed) or reduce `--max-files`; coverage from the attempted review
+remains available. Invalid schemas or evidence outside supplied source are
+reported as errors without a retry.
 
 Exit codes: 0 for completed/empty reviews, 1 for runtime errors, 2 for invalid
 arguments, and 130 for interruption with successful cleanup. Help and argparse
@@ -197,12 +267,12 @@ reprobe --help
 
 Tests use fake inference models and small metadata-only GGUF fixtures; no GPU or
 inference weights are needed. For a lightweight development environment install
-with `--no-deps` and separately install `pytest` and `gguf`.
+with `--no-deps` and separately install `pytest`, `gguf`, and `pathspec`.
 
 Run real inference separately with your own GGUF:
 
 ```bash
-python -m reprobe --model /path/to/model.gguf . > review.json
+python -m reprobe --model /path/to/model.gguf . --output-json review.json
 python -m json.tool review.json
 printf 'Hello\n/exit\n' | python -m reprobe --model /path/to/model.gguf . --chat
 ```

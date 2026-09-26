@@ -90,7 +90,7 @@ def test_token_budget_shrinks_excerpts(tmp_path):
 
 
 @pytest.mark.parametrize("content,reason", [
-    ("not json", "stop"), ('{"recommendations":[]}', "length"),
+    ("not json", "stop"), ('{"recommendations":[', "length"),
     (json.dumps({"recommendations": [recommendation("unseen.py")]}), "stop"),
     (json.dumps({"recommendations": [recommendation(end=99)]}), "stop"),
     ('{"recommendations":[],"extra":true}', "stop"),
@@ -112,7 +112,7 @@ def test_cli_emits_one_json_object_and_cleans_up(tmp_path, capsys, failure, exit
     adapter.__enter__ = Mock(return_value=model)
     adapter.__exit__ = Mock(return_value=False)
     with patch("reprobe.cli.GgufMetadataReader.read", return_value=ModelMetadata("llama", 8192)), patch("reprobe.cli.LlamaCppModel", return_value=adapter):
-        status = main(["--model", str(model_path), str(tmp_path)])
+        status = main(["--output-json", "-", "--model", str(model_path), str(tmp_path)])
     assert status == exit_code
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == ("error" if failure else "completed")
@@ -124,7 +124,7 @@ def test_cli_emits_one_json_object_and_cleans_up(tmp_path, capsys, failure, exit
 def test_cli_invalid_repository_still_has_json_error(tmp_path, capsys):
     model = tmp_path / "model.gguf"
     model.touch()
-    assert main(["--model", str(model), str(tmp_path / "missing")]) == 1
+    assert main(["--output-json", "-", "--model", str(model), str(tmp_path / "missing")]) == 1
     report = json.loads(capsys.readouterr().out)
     assert report["errors"][0]["code"] == "RepositoryError"
 
@@ -155,7 +155,7 @@ def test_adapter_requests_schema_and_uses_backend_tokenizer():
 def test_cli_metadata_failure_is_json(tmp_path, capsys):
     path = tmp_path / "broken.gguf"
     path.write_bytes(b"bad model")
-    assert main(["--model", str(path), str(tmp_path)]) == 1
+    assert main(["--output-json", "-", "--model", str(path), str(tmp_path)]) == 1
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "error"
     assert report["errors"][0]["code"] == "MetadataError"
@@ -170,7 +170,7 @@ def test_cli_cleanup_failure_discards_recommendations(tmp_path, capsys):
     adapter.__enter__ = Mock(return_value=fake_model([recommendation()]))
     adapter.__exit__ = Mock(side_effect=ModelError("Cannot release model resources"))
     with patch("reprobe.cli.GgufMetadataReader.read", return_value=ModelMetadata("llama", 4096)), patch("reprobe.cli.LlamaCppModel", return_value=adapter):
-        assert main(["--model", str(path), str(tmp_path)]) == 1
+        assert main(["--output-json", "-", "--model", str(path), str(tmp_path)]) == 1
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "error"
     assert report["recommendations"] == []
@@ -184,3 +184,20 @@ def test_large_single_line_is_bounded(tmp_path):
     text, truncated = repository.read_excerpt(tmp_path, inspection.candidates[0], 80)
     assert truncated
     assert len(text.encode()) <= 65536
+
+
+def test_review_progress_events_and_default_silence(tmp_path, capsys):
+    (tmp_path / "main.py").write_text("pass\n")
+    repository = LocalRepository()
+    events = []
+    model = fake_model()
+    EvaluateRepository(tmp_path, repository, SourceContext(repository), model, 3000,
+                       on_progress=events.append).execute()
+    assert events == ["scan", "context", "preflight", "generate", "validate"]
+    model.generate_review.side_effect = ModelError("generation failed")
+    events.clear()
+    with pytest.raises(ModelError):
+        EvaluateRepository(tmp_path, repository, SourceContext(repository), model, 3000,
+                           on_progress=events.append).execute()
+    assert events == ["scan", "context", "preflight", "generate"]
+    assert capsys.readouterr().out == ""

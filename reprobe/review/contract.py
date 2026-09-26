@@ -3,7 +3,7 @@ import json
 from typing import Any
 
 from reprobe.chat.types import ChatReply
-from reprobe.review.types import Evidence, Recommendation, ReviewError, SourceExcerpt
+from reprobe.review.types import Evidence, Recommendation, ReviewError, SourceExcerpt, TruncatedReviewError
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -12,20 +12,21 @@ def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 
 
 TEXT = {"type": "string", "minLength": 1}
-TEXT_LIST = {"type": "array", "minItems": 1, "items": TEXT}
+SHORT_TEXT = {"type": "string", "minLength": 1, "maxLength": 240}
+TEXT_LIST = {"type": "array", "minItems": 1, "maxItems": 3, "items": SHORT_TEXT}
 EVIDENCE_SCHEMA = object_schema({
     "path": TEXT, "start_line": {"type": "integer", "minimum": 1},
-    "end_line": {"type": "integer", "minimum": 1}, "explanation": TEXT,
+    "end_line": {"type": "integer", "minimum": 1}, "explanation": SHORT_TEXT,
 })
 RECOMMENDATION_SCHEMA = object_schema({
     "category": {"type": "string", "enum": ["fix", "improvement", "feature"]},
     "priority": {"type": "string", "enum": ["high", "medium", "low"]},
-    "title": TEXT,
-    "evidence": {"type": "array", "minItems": 1, "items": EVIDENCE_SCHEMA},
+    "title": {"type": "string", "minLength": 1, "maxLength": 120},
+    "evidence": {"type": "array", "minItems": 1, "maxItems": 2, "items": EVIDENCE_SCHEMA},
     "suggested_changes": TEXT_LIST, "validation_steps": TEXT_LIST,
 })
 REVIEW_SCHEMA = object_schema({"recommendations": {
-    "type": "array", "maxItems": 3, "items": RECOMMENDATION_SCHEMA,
+    "type": "array", "maxItems": 1, "items": RECOMMENDATION_SCHEMA,
 }})
 
 
@@ -44,6 +45,8 @@ def _validate(value: object, schema: dict[str, Any]) -> None:
     elif kind == "string":
         if not isinstance(value, str) or not value.strip():
             raise ValueError("expected nonempty text")
+        if len(value) > schema.get("maxLength", float("inf")):
+            raise ValueError("text exceeds the concise review limit")
         if "enum" in schema and value not in schema["enum"]:
             raise ValueError("unsupported category or priority")
     elif kind == "integer":
@@ -52,8 +55,8 @@ def _validate(value: object, schema: dict[str, Any]) -> None:
 
 
 def parse_recommendations(reply: ChatReply, excerpts: tuple[SourceExcerpt, ...]) -> tuple[Recommendation, ...]:
-    if reply.finish_reason != "stop":
-        raise ReviewError("Review output was truncated; increase --max-tokens (and --n-ctx if needed).")
+    if reply.finish_reason not in {"stop", "length"}:
+        raise ReviewError(f"Unsupported review finish reason: {reply.finish_reason}")
     try:
         data = json.loads(reply.content)
         _validate(data, REVIEW_SCHEMA)
@@ -63,12 +66,20 @@ def parse_recommendations(reply: ChatReply, excerpts: tuple[SourceExcerpt, ...])
             evidence = []
             for citation in item["evidence"]:
                 if citation["path"] not in ranges or not 1 <= citation["start_line"] <= citation["end_line"] <= ranges[citation["path"]]:
-                    raise ValueError("evidence refers to source lines not supplied to the model")
+                    raise ValueError(
+                        f"evidence refers to source lines not supplied to the model: "
+                        f"{citation['path']}:{citation['start_line']}-{citation['end_line']} "
+                        f"(supplied end line: {ranges.get(citation['path'], 'file not supplied')})"
+                    )
                 evidence.append(Evidence(**citation))
             results.append(Recommendation(
                 f"R{index:03}", item["category"], item["priority"], item["title"],
                 tuple(evidence), tuple(item["suggested_changes"]), tuple(item["validation_steps"]),
             ))
         return tuple(results)
+    except json.JSONDecodeError as exc:
+        if reply.finish_reason == "length":
+            raise TruncatedReviewError("Review output was truncated before a complete JSON report was generated.") from exc
+        raise ReviewError(f"Invalid structured review: {exc}. Check model/chat-template compatibility.") from exc
     except (ValueError, TypeError, KeyError) as exc:
         raise ReviewError(f"Invalid structured review: {exc}. Check model/chat-template compatibility.") from exc

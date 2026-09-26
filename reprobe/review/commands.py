@@ -1,13 +1,14 @@
 """Reusable repository inspection and review workflows."""
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from dataclasses import replace
 from typing import Protocol
 
 from reprobe.chat.types import ChatMessage, ChatReply
 from reprobe.repositories.local import LocalRepository
 from reprobe.review.contract import parse_recommendations
-from reprobe.review.prompt import review_messages
-from reprobe.review.types import CodebaseInspection, ReviewResult
+from reprobe.review.prompt import review_messages, compact_review_messages
+from reprobe.review.types import CodebaseInspection, ReviewResult, Omission, ReviewError, TruncatedReviewError
 from reprobe.review.source_context import SourceContext
 
 
@@ -32,20 +33,71 @@ class InspectCodebase:
 class EvaluateRepository:
     """Coordinate inspection, bounded context, generation, and validation."""
     def __init__(self, path: Path, repository: LocalRepository, context: SourceContext,
-                 model: ReviewModel, input_budget: int) -> None:
+                 model: ReviewModel, input_budget: int, *,
+                 on_progress: Callable[[str], None] | None = None) -> None:
         self._path = path
         self._repository = repository
         self._context = context
         self._model = model
         self._input_budget = input_budget
+        self._on_progress = on_progress
+        self._result: ReviewResult | None = None
+
+    @property
+    def result(self) -> ReviewResult | None:
+        """Latest immutable coverage snapshot, available even if evaluation fails."""
+        return self._result
 
     def execute(self) -> ReviewResult:
+        self._result = None
+        self._report_progress("scan")
         inspection = InspectCodebase(self._path, self._repository).execute()
-        if not inspection.is_codebase:
-            return ReviewResult(inspection, (), (), ())
-        excerpts, omissions = self._context.prepare(
-            inspection, self._model.count_message_tokens, self._input_budget,
+        self._result = ReviewResult(
+            inspection, (), tuple(Omission(c.path, "not_sent_to_model") for c in inspection.candidates), (),
+            input_budget=self._input_budget,
         )
-        reply = self._model.generate_review(review_messages(excerpts))
-        recommendations = parse_recommendations(reply, excerpts)
-        return ReviewResult(inspection, excerpts, omissions, recommendations)
+        if not inspection.is_codebase:
+            self._report_progress("empty")
+            return self._result
+        for attempt in range(2):
+            if attempt:
+                self._report_progress("retry")
+            else:
+                self._report_progress("context")
+            builder = compact_review_messages if attempt else review_messages
+            overhead = 0
+            if attempt:
+                overhead = max(0, self._model.count_message_tokens(builder(()))
+                               - self._model.count_message_tokens(review_messages(())))
+            excerpts, omissions = self._context.prepare(
+                inspection, self._model.count_message_tokens, self._input_budget - overhead,
+            )
+            messages = builder(excerpts)
+            tokens = self._model.count_message_tokens(messages)
+            self._result = ReviewResult(inspection, excerpts, omissions, (), tokens,
+                                        self._input_budget, attempt)
+            if tokens > self._input_budget:
+                raise ReviewError("Review input exceeds the available token budget; increase --n-ctx or reduce --max-tokens.")
+            self._report_progress("preflight")
+            self._result = replace(self._result, generation_attempts=attempt + 1)
+            self._report_progress("generate")
+            reply = self._model.generate_review(messages)
+            self._report_progress("validate")
+            try:
+                recommendations = parse_recommendations(reply, excerpts)
+            except TruncatedReviewError as exc:
+                if not attempt:
+                    continue
+                raise ReviewError(
+                    "The model exceeded its output token limit on both the initial review and "
+                    "one concise retry. The input prompt fit its budget, but the answer did not fit "
+                    "its output allowance. Increase --max-tokens (and --n-ctx if needed), "
+                    "or reduce --max-files. Coverage from the last attempt is retained."
+                ) from exc
+            self._result = replace(self._result, recommendations=recommendations)
+            return self._result
+        raise AssertionError("Unreachable review retry state")
+
+    def _report_progress(self, stage: str) -> None:
+        if self._on_progress is not None:
+            self._on_progress(stage)
